@@ -1,0 +1,31 @@
+# 构建目录
+/build/
+bin/
+obj/
+
+# VS Code 配置
+.vscode/
+*.code-workspace
+
+# 编译产物
+*.exe
+*.dll
+*.so
+*.dylib
+*.out
+
+# 中间文件
+*.o
+*.obj
+*.log
+
+# CMake 缓存
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# 其他
+*.zip
+*.tar
+*.gz
