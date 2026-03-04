@@ -17,11 +17,7 @@
 - **OpenGL 4.x**
 - **GLFW / GLAD** 
 - **ImGui** 
-- **Assimp**
-
-
-
-​	
+- **Assimp**	
 
 ## 项目结构
 
