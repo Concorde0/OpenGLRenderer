@@ -31,4 +31,5 @@ OpenGLRenderer/
 ├── build/          # 构建输出目录
 ├── README.md
 └── .gitignore
+└── .markdownlint.json
 ```
