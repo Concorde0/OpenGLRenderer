@@ -137,7 +137,7 @@ int main()
     glEnableVertexAttribArray(2);
 
     // 加载纹理（使用Texture类）
-    Texture texture("container.jpg");
+    Texture texture("assets/container.jpg");
 
     // 设置纹理单元
     shader.Use();
