@@ -25,6 +25,7 @@
 OpenGLRenderer/
 ├── src/            # 源代码
 ├── include/        # 头文件
+├── lib/            # 第三方库
 ├── shaders/        # GLSL 着色器
 ├── assets/         # 模型与纹理资源
 ├── build/          # 构建输出目录
