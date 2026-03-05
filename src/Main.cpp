@@ -7,6 +7,9 @@
 #include "../include/Shader.h"
 #include "../include/Texture.h"
 #include "../include/Camera.h"
+#include "../include/VertexArray.h"
+#include "../include/VertexBuffer.h"
+#include "../include/IndexBuffer.h"
 
 // 来自 Window.cpp 的全局变量（相机与时间由 Window 模块管理）
 extern Camera camera;
@@ -79,29 +82,18 @@ int main()
         0, 2, 3
     };
 
-    // 创建VAO, VBO, EBO
-    unsigned int VAO, VBO, EBO;
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
-    glGenBuffers(1, &EBO);
+    // 创建 VAO / VBO / EBO（绑定顺序不能乱：先绑 VAO，构造函数内自动绑 VBO/EBO）
+    VertexArray vao;
+    vao.Bind();
 
-    glBindVertexArray(VAO);
+    VertexBuffer vbo(vertices, sizeof(vertices));
+    IndexBuffer  ebo(indices, sizeof(indices) / sizeof(unsigned int));
 
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-
-    // 位置属性
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    // 颜色属性
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    // 纹理坐标属性
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-    glEnableVertexAttribArray(2);
+    // 设置顶点属性（需在 VAO 和 VBO 已绑定的状态下调用）
+    constexpr int stride = 8 * sizeof(float);
+    vao.AddAttribute(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);                     // 位置
+    vao.AddAttribute(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)(3 * sizeof(float)));   // 颜色
+    vao.AddAttribute(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)(6 * sizeof(float)));   // 纹理坐标
 
     // 加载纹理（使用Texture类）
     Texture texture("assets/container.jpg");
@@ -146,17 +138,13 @@ int main()
 
         // 绑定纹理并绘制
         texture.Bind(0);
-        glBindVertexArray(VAO);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        vao.Bind();
+        glDrawElements(GL_TRIANGLES, ebo.GetCount(), GL_UNSIGNED_INT, 0);
 
         win.SwapBuffers();
         win.PollEvents();
     }
 
-    // 清理资源
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
-    glDeleteBuffers(1, &EBO);
-
+    // VAO / VBO / EBO 由析构函数（RAII）自动释放
     return 0;
 }
