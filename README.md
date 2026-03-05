@@ -23,13 +23,27 @@
 
 ```
 OpenGLRenderer/
-├── src/            # 源代码
-├── include/        # 头文件
-├── lib/            # 第三方库
-├── shaders/        # GLSL 着色器
-├── assets/         # 模型与纹理资源
-├── build/          # 构建输出目录
+├── src/                      # 源代码
+│   ├── Core/
+│   │   ├── Window.cpp          # 窗口管理、输入处理
+│   │   └── Camera.cpp          # 相机控制
+│   │
+│   ├── Rendering/
+│   │   ├── Shader.cpp          # 着色器编译、管理
+│   │   ├── Texture.cpp         # 纹理加载、管理
+│   │
+│   ├── Lighting
+│   │
+│   ├── Renderer
+│   │
+│   └── UI/                     # UI层
+│
+├── include/                  # 头文件（公共头文件）
+├── shaders/                  # GLSL 着色器
+├── assets/                   # 模型与纹理资源
+├── build/                    # 构建输出目录
 ├── README.md
-└── .gitignore
-└── .markdownlint.json
+├── .gitignore
+└── .markdownlint.json        # Markdown 语法检查配置文件
+
 ```
