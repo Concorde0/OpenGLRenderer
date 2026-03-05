@@ -5,7 +5,7 @@
 
 Shader::Shader(const char* vertexPath, const char* fragmentPath)
 {
-    // 1. 从文件路径中读取顶点/片段着色器
+    // 从文件路径中读取着色器
     std::string vertexCode;
     std::string fragmentCode;
     std::ifstream vShaderFile;
@@ -35,7 +35,7 @@ Shader::Shader(const char* vertexPath, const char* fragmentPath)
     const char* vShaderCode = vertexCode.c_str();
     const char* fShaderCode = fragmentCode.c_str();
 
-    // 2. 编译着色器
+    // 编译着色器
     unsigned int vertex, fragment;
 
     // 顶点着色器
