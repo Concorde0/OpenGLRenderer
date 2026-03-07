@@ -95,6 +95,12 @@ int main()
     vao.AddAttribute(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)(3 * sizeof(float)));   // 颜色
     vao.AddAttribute(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)(6 * sizeof(float)));   // 纹理坐标
 
+
+    if(!Texture::IsFormatSupported("assets/container.jpg")) {
+        std::cout << "错误：不支持的纹理格式" << std::endl;
+        return -1;
+    }
+    
     // 加载纹理（使用Texture类）
     Texture texture("assets/container.jpg");
 
@@ -145,6 +151,5 @@ int main()
         win.PollEvents();
     }
 
-    // VAO / VBO / EBO 由析构函数（RAII）自动释放
     return 0;
 }
