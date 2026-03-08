@@ -103,6 +103,19 @@ int main()
     
     // 加载纹理（使用Texture类）
     Texture texture("assets/container.jpg");
+    
+    // 检查纹理是否加载成功
+    if(!texture.IsLoaded()) {
+        std::cerr << "无法加载纹理，退出程序。" << std::endl;
+        return -1;
+    }
+    
+    // 配置纹理参数
+    // 设置纹理寻址模式：平铺（Repeat）
+    texture.SetWrapMode(TextureWrapMode::Repeat, TextureWrapMode::Repeat);
+    
+    // 设置纹理过滤模式：使用线性过滤和 Mipmap
+    texture.SetFilterMode(TextureFilterMode::LinearMipmapLinear, TextureFilterMode::Linear);
 
     // 设置纹理单元
     shader.Use();

@@ -6,8 +6,17 @@
 
 Texture::Texture(const std::string& path, bool flipVertically) 
     : m_TextureID(0), m_FilePath(path), m_Width(0), m_Height(0), m_Channels(0), 
-      m_IsLoaded(false), m_Format(TextureFormat::Unknown)
+      m_IsLoaded(false), m_Format(TextureFormat::Unknown),
+      m_WrapS(TextureWrapMode::Repeat), m_WrapT(TextureWrapMode::Repeat),
+      m_MinFilter(TextureFilterMode::LinearMipmapLinear), m_MagFilter(TextureFilterMode::Linear),
+      m_MipmapEnabled(true)
 {
+    // 初始化边界颜色（黑色）
+    m_BorderColor[0] = 0.0f;
+    m_BorderColor[1] = 0.0f;
+    m_BorderColor[2] = 0.0f;
+    m_BorderColor[3] = 1.0f;
+
     // 检测文件格式
     m_Format = DetermineFormat(path);
     m_FormatString = GetFormatName(m_Format);
@@ -22,14 +31,15 @@ Texture::Texture(const std::string& path, bool flipVertically)
         glGenTextures(1, &m_TextureID);
         glBindTexture(GL_TEXTURE_2D, m_TextureID);
 
-        // 设置纹理参数
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
         glTexImage2D(GL_TEXTURE_2D, 0, format, m_Width, m_Height, 0, format, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
+        
+        // 生成 Mipmap
+        if (m_MipmapEnabled) {
+            glGenerateMipmap(GL_TEXTURE_2D);
+        }
+
+        // 应用纹理参数
+        ApplyTextureParameters();
 
         m_IsLoaded = true;
 
@@ -39,6 +49,9 @@ Texture::Texture(const std::string& path, bool flipVertically)
         std::cout << "  Size: " << m_Width << "x" << m_Height << std::endl;
         std::cout << "  Channels: " << m_Channels << std::endl;
         std::cout << "  Memory: " << GetMemorySize() / 1024 << " KB" << std::endl;
+        std::cout << "  WrapMode: [S=" << GetWrapModeName(m_WrapS) << ", T=" << GetWrapModeName(m_WrapT) << "]" << std::endl;
+        std::cout << "  FilterMode: [Min=" << GetFilterModeName(m_MinFilter) << ", Mag=" << GetFilterModeName(m_MagFilter) << "]" << std::endl;
+        std::cout << "  Mipmap: " << (m_MipmapEnabled ? "Enabled" : "Disabled") << std::endl;
     }
     else {
         std::cerr << "✗ Failed to load texture: " << path << std::endl;
@@ -66,17 +79,109 @@ void Texture::Unbind() const
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+void Texture::SetWrapMode(TextureWrapMode wrapS, TextureWrapMode wrapT)
+{
+    m_WrapS = wrapS;
+    m_WrapT = wrapT;
+
+    if (m_TextureID != 0) {
+        glBindTexture(GL_TEXTURE_2D, m_TextureID);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, static_cast<GLint>(wrapS));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, static_cast<GLint>(wrapT));
+        glBindTexture(GL_TEXTURE_2D, 0);
+        
+        std::cout << "✓ Wrap mode updated: S=" << GetWrapModeName(wrapS) 
+                  << ", T=" << GetWrapModeName(wrapT) << std::endl;
+    }
+}
+
+void Texture::SetFilterMode(TextureFilterMode minFilter, TextureFilterMode magFilter)
+{
+    m_MinFilter = minFilter;
+    m_MagFilter = magFilter;
+
+    if (m_TextureID != 0) {
+        glBindTexture(GL_TEXTURE_2D, m_TextureID);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(minFilter));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(magFilter));
+        glBindTexture(GL_TEXTURE_2D, 0);
+        
+        std::cout << "✓ Filter mode updated: Min=" << GetFilterModeName(minFilter) 
+                  << ", Mag=" << GetFilterModeName(magFilter) << std::endl;
+    }
+}
+
+void Texture::SetBorderColor(float r, float g, float b, float a)
+{
+    m_BorderColor[0] = r;
+    m_BorderColor[1] = g;
+    m_BorderColor[2] = b;
+    m_BorderColor[3] = a;
+
+    if (m_TextureID != 0) {
+        glBindTexture(GL_TEXTURE_2D, m_TextureID);
+        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, m_BorderColor);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        
+        std::cout << "✓ Border color updated: RGBA(" << r << ", " << g << ", " 
+                  << b << ", " << a << ")" << std::endl;
+    }
+}
+
+void Texture::SetMipmapEnabled(bool enabled)
+{
+    m_MipmapEnabled = enabled;
+
+    if (m_TextureID != 0) {
+        glBindTexture(GL_TEXTURE_2D, m_TextureID);
+        
+        if (enabled) {
+            glGenerateMipmap(GL_TEXTURE_2D);
+            // 设置默认的 mipmap 过滤模式
+            if (m_MinFilter != TextureFilterMode::Nearest && 
+                m_MinFilter != TextureFilterMode::Linear) {
+                // 已经是 mipmap 模式，不需要改变
+            } else {
+                // 转换到 mipmap 模式
+                SetFilterMode(TextureFilterMode::LinearMipmapLinear, m_MagFilter);
+            }
+            std::cout << "✓ Mipmap enabled" << std::endl;
+        } else {
+            // 禁用 mipmap，使用普通过滤模式
+            SetFilterMode(TextureFilterMode::Linear, m_MagFilter);
+            std::cout << "✓ Mipmap disabled" << std::endl;
+        }
+        
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+}
+
+void Texture::ApplyTextureParameters()
+{
+    glBindTexture(GL_TEXTURE_2D, m_TextureID);
+    
+    // 应用寻址模式
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, static_cast<GLint>(m_WrapS));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, static_cast<GLint>(m_WrapT));
+    
+    // 应用过滤模式
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(m_MinFilter));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(m_MagFilter));
+    
+    // 应用边界颜色
+    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, m_BorderColor);
+    
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 TextureFormat Texture::DetermineFormat(const std::string& filePath)
 {
-    // 获取文件扩展名
     size_t dotPos = filePath.find_last_of(".");
     if (dotPos == std::string::npos) {
         return TextureFormat::Unknown;
     }
 
     std::string ext = filePath.substr(dotPos + 1);
-    
-    // 转换为小写
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
     if (ext == "png") return TextureFormat::PNG;
@@ -141,4 +246,28 @@ TextureFormat Texture::DetectFormat(const std::string& filePath)
     if (ext == "pic") return TextureFormat::PIC;
 
     return TextureFormat::Unknown;
+}
+
+const char* Texture::GetWrapModeName(TextureWrapMode mode)
+{
+    switch (mode) {
+        case TextureWrapMode::Repeat: return "Repeat";
+        case TextureWrapMode::MirroredRepeat: return "MirroredRepeat";
+        case TextureWrapMode::ClampToEdge: return "ClampToEdge";
+        case TextureWrapMode::ClampToBorder: return "ClampToBorder";
+        default: return "Unknown";
+    }
+}
+
+const char* Texture::GetFilterModeName(TextureFilterMode mode)
+{
+    switch (mode) {
+        case TextureFilterMode::Nearest: return "Nearest";
+        case TextureFilterMode::Linear: return "Linear";
+        case TextureFilterMode::NearestMipmapNearest: return "NearestMipmapNearest";
+        case TextureFilterMode::LinearMipmapNearest: return "LinearMipmapNearest";
+        case TextureFilterMode::NearestMipmapLinear: return "NearestMipmapLinear";
+        case TextureFilterMode::LinearMipmapLinear: return "LinearMipmapLinear";
+        default: return "Unknown";
+    }
 }
