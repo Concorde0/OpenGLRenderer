@@ -17,7 +17,7 @@ extern Camera camera;
 extern float deltaTime;
 extern float lastFrame;
 
-// 生成 UV 球体顶点数据（格式：位置xyz + 纹理坐标uv，每顶点 5 个浮点数）
+// 生成 UV 球体顶点数据
 static void GenerateSphere(float radius, int stacks, int sectors,
                            std::vector<float>& verts, std::vector<unsigned int>& idxs)
 {
@@ -29,7 +29,7 @@ static void GenerateSphere(float radius, int stacks, int sectors,
         for (int j = 0; j <= sectors; ++j) {
             float theta = j * (2.0f * PI / sectors);
             verts.push_back(xz * cosf(theta));    // x
-            verts.push_back(y);                    // y
+            verts.push_back(y);                   // y
             verts.push_back(xz * sinf(theta));    // z
             verts.push_back((float)j / sectors);  // u
             verts.push_back((float)i / stacks);   // v
@@ -56,7 +56,7 @@ int main()
     // 捕获鼠标
     glfwSetInputMode(win.GetWindow(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-    // 顶点着色器源码
+    // 顶点着色器
     const std::string vertexShaderSource = R"(
         #version 330 core
         layout (location = 0) in vec3 aPos;
@@ -75,7 +75,7 @@ int main()
         }
     )";
 
-    // 片段着色器源码（漫反射 + 高光贴图）
+    // 片段着色器（漫反射 + 高光贴图）
     const std::string fragmentShaderSource = R"(
         #version 330 core
         out vec4 FragColor;
@@ -94,7 +94,7 @@ int main()
         }
     )";
 
-    // 创建着色器（使用Shader类）
+    // 创建着色器
     Shader shader(vertexShaderSource, fragmentShaderSource, true);
 
     // ---------- 立方体（36顶点，6面×2三角形×3顶点，格式：位置(3)+纹理坐标(2)）----------
@@ -173,17 +173,17 @@ int main()
             glm::radians(camera.Zoom),
             (float)Window::SCR_WIDTH / (float)Window::SCR_HEIGHT,
             0.1f, 100.0f);
-        shader.SetMat4("view",       view);
+        shader.SetMat4("view",view);
         shader.SetMat4("projection", projection);
 
-        // 立方体（左侧，持续自转）
+        // 立方体
         glm::mat4 modelCube = glm::translate(glm::mat4(1.0f), glm::vec3(-1.2f, 0.0f, 0.0f));
         modelCube = glm::rotate(modelCube, currentFrame, glm::vec3(0.5f, 1.0f, 0.0f));
         shader.SetMat4("model", modelCube);
         cubeVAO.Bind();
         glDrawArrays(GL_TRIANGLES, 0, 36);
 
-        // 球体（右侧，持续自转）
+        // 球体
         glm::mat4 modelSphere = glm::translate(glm::mat4(1.0f), glm::vec3(1.2f, 0.0f, 0.0f));
         modelSphere = glm::rotate(modelSphere, currentFrame * 0.8f, glm::vec3(0.0f, 1.0f, 0.0f));
         shader.SetMat4("model", modelSphere);
