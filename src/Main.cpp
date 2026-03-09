@@ -31,10 +31,9 @@ int main()
     const std::string vertexShaderSource = R"(
         #version 330 core
         layout (location = 0) in vec3 aPos;
-        layout (location = 1) in vec3 aColor;
+        layout (location = 1) in vec3 aColor;   // 保留属性槽，顶点数据不变
         layout (location = 2) in vec2 aTexCoord;
         
-        out vec3 ourColor;
         out vec2 TexCoord;
         
         uniform mat4 model;
@@ -44,24 +43,26 @@ int main()
         void main()
         {
             gl_Position = projection * view * model * vec4(aPos, 1.0);
-            ourColor = aColor;
             TexCoord = aTexCoord;
         }
     )";
 
-    // 片段着色器源码
+    // 片段着色器源码（漫反射 + 高光贴图）
     const std::string fragmentShaderSource = R"(
         #version 330 core
         out vec4 FragColor;
         
-        in vec3 ourColor;
         in vec2 TexCoord;
         
-        uniform sampler2D ourTexture;
+        uniform sampler2D texture_diffuse;   // 漫反射贴图（slot 0）
+        uniform sampler2D texture_specular;  // 高光贴图（slot 1）
         
         void main()
         {
-            FragColor = texture(ourTexture, TexCoord) * vec4(ourColor, 1.0);
+            vec4 diffuse  = texture(texture_diffuse,  TexCoord);
+            vec4 specular = texture(texture_specular, TexCoord);
+            // 叠加：漫反射颜色 + 25% 高光强度
+            FragColor = diffuse + specular * 0.25;
         }
     )";
 
@@ -96,30 +97,28 @@ int main()
     vao.AddAttribute(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)(6 * sizeof(float)));   // 纹理坐标
 
 
-    if(!Texture::IsFormatSupported("assets/container.jpg")) {
-        std::cout << "错误：不支持的纹理格式" << std::endl;
+    // 加载漫反射贴图（slot 0）
+    Texture diffuseMap("assets/container2.png");
+    if(!diffuseMap.IsLoaded()) {
+        std::cerr << "无法加载漫反射贴图，退出程序。" << std::endl;
         return -1;
     }
-    
-    // 加载纹理（使用Texture类）
-    Texture texture("assets/container.jpg");
-    
-    // 检查纹理是否加载成功
-    if(!texture.IsLoaded()) {
-        std::cerr << "无法加载纹理，退出程序。" << std::endl;
-        return -1;
-    }
-    
-    // 配置纹理参数
-    // 设置纹理寻址模式：平铺（Repeat）
-    texture.SetWrapMode(TextureWrapMode::Repeat, TextureWrapMode::Repeat);
-    
-    // 设置纹理过滤模式：使用线性过滤和 Mipmap
-    texture.SetFilterMode(TextureFilterMode::LinearMipmapLinear, TextureFilterMode::Linear);
+    diffuseMap.SetWrapMode(TextureWrapMode::Repeat, TextureWrapMode::Repeat);
+    diffuseMap.SetFilterMode(TextureFilterMode::LinearMipmapLinear, TextureFilterMode::Linear);
 
-    // 设置纹理单元
+    // 加载高光贴图（slot 1）
+    Texture specularMap("assets/container_specular.png");
+    if(!specularMap.IsLoaded()) {
+        std::cerr << "无法加载高光贴图，退出程序。" << std::endl;
+        return -1;
+    }
+    specularMap.SetWrapMode(TextureWrapMode::Repeat, TextureWrapMode::Repeat);
+    specularMap.SetFilterMode(TextureFilterMode::LinearMipmapLinear, TextureFilterMode::Linear);
+
+    // 绑定着色器并告知每个 sampler2D 使用哪个纹理槽
     shader.Use();
-    shader.SetInt("ourTexture", 0);
+    shader.SetInt("texture_diffuse",  0);
+    shader.SetInt("texture_specular", 1);
 
     // 渲染循环
     while (!win.ShouldClose())
@@ -155,8 +154,9 @@ int main()
         shader.SetMat4("view", view);
         shader.SetMat4("projection", projection);
 
-        // 绑定纹理并绘制
-        texture.Bind(0);
+        // 绑定漫反射贴图到 slot 0，高光贴图到 slot 1
+        diffuseMap.Bind(0);
+        specularMap.Bind(1);
         vao.Bind();
         glDrawElements(GL_TRIANGLES, ebo.GetCount(), GL_UNSIGNED_INT, 0);
 
