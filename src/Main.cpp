@@ -2,16 +2,19 @@
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <array>
+#include <fstream>
 #include <iostream>
-#include <vector>
-#include <cmath>
 #include <algorithm>
+#include <cmath>
+#include <memory>
+#include <vector>
 #include "../include/Window.h"
 #include "../include/Shader.h"
 #include "../include/Texture.h"
+#include "../include/PBRMaterial.h"
 #include "../include/Camera.h"
 #include "../include/Light.h"
-#include "../include/ShadowMap.h"
 #include "../include/VertexArray.h"
 #include "../include/VertexBuffer.h"
 #include "../include/IndexBuffer.h"
@@ -20,7 +23,304 @@ extern Camera camera;
 extern float deltaTime;
 extern float lastFrame;
 
-// 为非索引三角形网格生成切线（输入布局：pos3 + normal3 + uv2）
+static std::vector<float> BuildTangentVerticesFromTriangleList(const float* src, size_t floatCount);
+
+namespace {
+
+constexpr int kMeshStrideFloats = 11;
+constexpr int kMeshStrideBytes = kMeshStrideFloats * sizeof(float);
+
+struct PBRTextureAtlas {
+    std::unique_ptr<Texture> albedo;
+    std::unique_ptr<Texture> metallic;
+    std::unique_ptr<Texture> normal;
+    std::unique_ptr<Texture> roughness;
+
+    bool HasAnyMap() const
+    {
+        return albedo != nullptr || metallic != nullptr || normal != nullptr || roughness != nullptr;
+    }
+};
+
+static bool FileExists(const std::string& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    return file.good();
+}
+
+static void ConfigureSurfaceTexture(Texture& texture)
+{
+    texture.SetWrapMode(TextureWrapMode::Repeat, TextureWrapMode::Repeat);
+    texture.SetFilterMode(TextureFilterMode::LinearMipmapLinear, TextureFilterMode::Linear);
+}
+
+static bool ValidateRequiredTexture(Texture& texture, const char* description)
+{
+    if (!texture.IsLoaded()) {
+        std::cerr << "无法加载" << description << "。\n";
+        return false;
+    }
+
+    ConfigureSurfaceTexture(texture);
+    return true;
+}
+
+static std::vector<std::string> BuildAtlasCandidates(const std::string& atlasName,
+                                                     std::initializer_list<const char*> suffixes)
+{
+    static const std::array<const char*, 3> kExtensions = { ".png", ".jpg", ".jpeg" };
+    std::vector<std::string> candidates;
+
+    for (const char* suffix : suffixes) {
+        for (const char* extension : kExtensions) {
+            candidates.emplace_back(std::string("assets/") + atlasName + "_" + suffix + extension);
+        }
+    }
+
+    return candidates;
+}
+
+static std::unique_ptr<Texture> LoadOptionalTextureFromCandidates(const std::vector<std::string>& candidates,
+                                                                  const char* mapLabel)
+{
+    for (const std::string& path : candidates) {
+        if (!FileExists(path)) {
+            continue;
+        }
+
+        std::unique_ptr<Texture> texture = std::make_unique<Texture>(path);
+        if (texture->IsLoaded()) {
+            ConfigureSurfaceTexture(*texture);
+            std::cout << "[Atlas] Loaded " << mapLabel << " map: " << path << std::endl;
+            return texture;
+        }
+    }
+
+    std::cout << "[Atlas] " << mapLabel << " map is missing, fallback will be used." << std::endl;
+    return nullptr;
+}
+
+static PBRTextureAtlas LoadPBRTextureAtlas(const std::string& atlasName)
+{
+    PBRTextureAtlas atlas;
+
+    atlas.albedo = LoadOptionalTextureFromCandidates(
+        BuildAtlasCandidates(atlasName, { "basecolor", "albedo", "diffuse", "color" }),
+        "albedo");
+    atlas.metallic = LoadOptionalTextureFromCandidates(
+        BuildAtlasCandidates(atlasName, { "metallic", "metalness", "metal" }),
+        "metallic");
+    atlas.normal = LoadOptionalTextureFromCandidates(
+        BuildAtlasCandidates(atlasName, { "normal", "normalgl", "nrm" }),
+        "normal");
+    atlas.roughness = LoadOptionalTextureFromCandidates(
+        BuildAtlasCandidates(atlasName, { "roughness", "rough", "glossiness" }),
+        "roughness");
+
+    if (!atlas.HasAnyMap()) {
+        std::cout << "[Atlas] No dedicated PBR atlas maps were found for " << atlasName
+                  << ", using fallback textures." << std::endl;
+    }
+
+    return atlas;
+}
+
+static void ConfigurePBRMaterial(PBRMaterial& material,
+                                 const PBRTextureAtlas& atlas,
+                                 const Texture& fallbackDiffuse,
+                                 const Texture& fallbackNormal,
+                                 const Texture& fallbackAO)
+{
+    material.SetAlbedoMap(atlas.albedo ? atlas.albedo.get() : &fallbackDiffuse);
+    material.SetNormalMap(atlas.normal ? atlas.normal.get() : &fallbackNormal);
+
+    if (atlas.metallic) {
+        material.SetMetallicMap(atlas.metallic.get());
+        material.SetMetallicFactor(1.0f);
+    }
+    else {
+        material.SetMetallicFactor(0.10f);
+    }
+
+    if (atlas.roughness) {
+        material.SetRoughnessMap(atlas.roughness.get());
+        material.SetRoughnessFactor(1.0f);
+    }
+    else {
+        material.SetRoughnessFactor(0.45f);
+    }
+
+    material.SetAOMap(&fallbackAO);
+    material.SetAlbedoFactor(glm::vec3(1.0f));
+    material.SetAOFactor(1.0f);
+}
+
+static void ConfigureMeshAttributes(VertexArray& vao, VertexBuffer& vbo)
+{
+    vao.Bind();
+    vbo.Bind();
+    vao.AddAttribute(0, 3, GL_FLOAT, GL_FALSE, kMeshStrideBytes, (void*)0);
+    vao.AddAttribute(1, 3, GL_FLOAT, GL_FALSE, kMeshStrideBytes, (void*)(3 * sizeof(float)));
+    vao.AddAttribute(2, 2, GL_FLOAT, GL_FALSE, kMeshStrideBytes, (void*)(6 * sizeof(float)));
+    vao.AddAttribute(3, 3, GL_FLOAT, GL_FALSE, kMeshStrideBytes, (void*)(8 * sizeof(float)));
+}
+
+static std::vector<float> CreateCubeVerticesWithTangents()
+{
+    float cubeVertsBase[] = {
+        // back face
+        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
+         0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 0.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
+        -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 1.0f,
+
+        // front face
+        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 0.0f,
+         0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 0.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 1.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 1.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 0.0f,
+
+        // left face
+        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
+        -0.5f,  0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 1.0f,
+        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
+        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
+        -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
+        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
+
+        // right face
+         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
+         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
+         0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 1.0f,
+         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
+         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
+         0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
+
+        // bottom face
+        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 1.0f,
+         0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 1.0f,
+         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
+         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 0.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 1.0f,
+
+        // top face
+        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
+        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 0.0f,
+    };
+
+    return BuildTangentVerticesFromTriangleList(cubeVertsBase, sizeof(cubeVertsBase) / sizeof(float));
+}
+
+static std::vector<float> CreatePlaneVerticesWithTangents()
+{
+    float planeVertsBase[] = {
+        // positions            // normals         // texcoords
+         6.0f, -0.5f,  6.0f,    0.0f, 1.0f, 0.0f,  6.0f, 0.0f,
+        -6.0f, -0.5f,  6.0f,    0.0f, 1.0f, 0.0f,  0.0f, 0.0f,
+        -6.0f, -0.5f, -6.0f,    0.0f, 1.0f, 0.0f,  0.0f, 6.0f,
+
+         6.0f, -0.5f,  6.0f,    0.0f, 1.0f, 0.0f,  6.0f, 0.0f,
+        -6.0f, -0.5f, -6.0f,    0.0f, 1.0f, 0.0f,  0.0f, 6.0f,
+         6.0f, -0.5f, -6.0f,    0.0f, 1.0f, 0.0f,  6.0f, 6.0f,
+    };
+
+    return BuildTangentVerticesFromTriangleList(planeVertsBase, sizeof(planeVertsBase) / sizeof(float));
+}
+
+static void ConfigurePBRShaderStaticUniforms(Shader& pbrShader,
+                                             const Light& sceneLight,
+                                             const glm::vec3& dirLightDirection)
+{
+    pbrShader.Use();
+    pbrShader.SetInt("irradianceMap", 10);
+    pbrShader.SetInt("prefilterMap", 11);
+    pbrShader.SetInt("brdfLUT", 12);
+    pbrShader.SetBool("enableIBL", true);
+
+    pbrShader.SetVec3("dirLight.direction", dirLightDirection);
+    pbrShader.SetVec3("dirLight.color", glm::vec3(1.0f, 0.98f, 0.95f));
+    pbrShader.SetFloat("dirLight.intensity", 1.1f);
+
+    pbrShader.SetFloat("pointLight.constant", 1.0f);
+    pbrShader.SetFloat("pointLight.linear", 0.09f);
+    pbrShader.SetFloat("pointLight.quadratic", 0.032f);
+    pbrShader.SetVec3("pointLight.color", sceneLight.GetDiffuse());
+    pbrShader.SetFloat("pointLight.intensity", 5.0f);
+
+    pbrShader.SetFloat("spotLight.cutOff", cosf(glm::radians(12.5f)));
+    pbrShader.SetFloat("spotLight.outerCutOff", cosf(glm::radians(17.5f)));
+    pbrShader.SetFloat("spotLight.constant", 1.0f);
+    pbrShader.SetFloat("spotLight.linear", 0.09f);
+    pbrShader.SetFloat("spotLight.quadratic", 0.032f);
+    pbrShader.SetVec3("spotLight.color", glm::vec3(1.0f));
+    pbrShader.SetFloat("spotLight.intensity", 3.0f);
+}
+
+static void BindIBLTextures(unsigned int irradianceMap, unsigned int prefilterMap, unsigned int brdfLUT)
+{
+    glActiveTexture(GL_TEXTURE10);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, irradianceMap);
+    glActiveTexture(GL_TEXTURE11);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, prefilterMap);
+    glActiveTexture(GL_TEXTURE12);
+    glBindTexture(GL_TEXTURE_2D, brdfLUT);
+}
+
+static void RenderSceneGeometry(Shader& shader,
+                                const VertexArray& planeVAO,
+                                const VertexArray& cubeVAO,
+                                const VertexArray& sphereVAO,
+                                const IndexBuffer& sphereEBO,
+                                float currentFrame)
+{
+    glm::mat4 modelPlane(1.0f);
+    shader.SetMat4("model", modelPlane);
+    planeVAO.Bind();
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    glm::mat4 modelCube = glm::translate(glm::mat4(1.0f), glm::vec3(-1.2f, 0.0f, 0.0f));
+    modelCube = glm::rotate(modelCube, currentFrame, glm::vec3(0.5f, 1.0f, 0.0f));
+    shader.SetMat4("model", modelCube);
+    cubeVAO.Bind();
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    glm::mat4 modelSphere = glm::translate(glm::mat4(1.0f), glm::vec3(1.2f, 0.0f, 0.0f));
+    modelSphere = glm::rotate(modelSphere, currentFrame * 0.8f, glm::vec3(0.0f, 1.0f, 0.0f));
+    shader.SetMat4("model", modelSphere);
+    sphereVAO.Bind();
+    glDrawElements(GL_TRIANGLES, sphereEBO.GetCount(), GL_UNSIGNED_INT, 0);
+}
+
+static void RenderLamp(Shader& lampShader,
+                       const VertexArray& cubeVAO,
+                       const Light& sceneLight,
+                       const glm::mat4& view,
+                       const glm::mat4& projection)
+{
+    lampShader.Use();
+    lampShader.SetMat4("view", view);
+    lampShader.SetMat4("projection", projection);
+
+    glm::mat4 lampModel = glm::translate(glm::mat4(1.0f), sceneLight.GetPosition());
+    lampModel = glm::scale(lampModel, glm::vec3(0.15f));
+    lampShader.SetMat4("model", lampModel);
+
+    cubeVAO.Bind();
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+}
+
+} // namespace
+
+// 为非索引三角形网格生成切线（ pos3 + normal3 + uv2）
 static std::vector<float> BuildTangentVerticesFromTriangleList(const float* src, size_t floatCount)
 {
     constexpr size_t srcStride = 8;
@@ -114,222 +414,134 @@ static void GenerateSphere(float radius, int stacks, int sectors,
     }
 }
 
+static unsigned int CreateSolidColorCubemap(const glm::vec3& color)
+{
+    unsigned int tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+
+    unsigned char pixel[3] = {
+        static_cast<unsigned char>(glm::clamp(color.r, 0.0f, 1.0f) * 255.0f),
+        static_cast<unsigned char>(glm::clamp(color.g, 0.0f, 1.0f) * 255.0f),
+        static_cast<unsigned char>(glm::clamp(color.b, 0.0f, 1.0f) * 255.0f)
+    };
+
+    for (unsigned int i = 0; i < 6; ++i) {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
+                     0,
+                     GL_RGB,
+                     1,
+                     1,
+                     0,
+                     GL_RGB,
+                     GL_UNSIGNED_BYTE,
+                     pixel);
+    }
+
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    return tex;
+}
+
+static unsigned int CreateFallbackBRDFLUT(int width = 128, int height = 128)
+{
+    std::vector<float> data(static_cast<size_t>(width) * static_cast<size_t>(height) * 2u);
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            float ndotV = (static_cast<float>(x) + 0.5f) / static_cast<float>(width);
+            float roughness = (static_cast<float>(y) + 0.5f) / static_cast<float>(height);
+            size_t index = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 2u;
+
+            data[index + 0] = ndotV;
+            data[index + 1] = (1.0f - roughness) * 0.35f;
+        }
+    }
+
+    unsigned int lut = 0;
+    glGenTextures(1, &lut);
+    glBindTexture(GL_TEXTURE_2D, lut);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0, GL_RG, GL_FLOAT, data.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    return lut;
+}
+
 int main()
 {
-    // 初始化窗口
     Window win;
     if (!win.Initialize()) {
         return -1;
     }
 
-    // 捕获鼠标
     glfwSetInputMode(win.GetWindow(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-    // 加载着色器文件
-    Shader shader("shaders/phong.vert", "shaders/phong.frag");
+    Shader pbrShader("shaders/pbr.vert", "shaders/pbr.frag");
     Shader lampShader("shaders/lamp.vert", "shaders/lamp.frag");
-    Shader depthShader("shaders/shadow_depth.vert", "shaders/shadow_depth.frag");
 
-    // ---------- 立方体（每顶点：位置3 + 法线3 + 纹理2）----------
-    float cubeVertsBase[] = {
-        // back face
-        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
-         0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f,  1.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
-        -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 1.0f,
-
-        // front face
-        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 1.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  1.0f, 1.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 1.0f,
-        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,  0.0f, 0.0f,
-
-        // left face
-        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
-        -0.5f,  0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 1.0f,
-        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-        -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
-        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
-
-        // right face
-         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
-         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-         0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 1.0f,
-         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 1.0f,
-         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  1.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,  0.0f, 0.0f,
-
-        // bottom face
-        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 1.0f,
-         0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 1.0f,
-         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  1.0f, 0.0f,
-        -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 0.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,  0.0f, 1.0f,
-
-        // top face
-        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 1.0f,
-         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  1.0f, 0.0f,
-        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 0.0f,
-    };
-    const std::vector<float> cubeVerts = BuildTangentVerticesFromTriangleList(
-        cubeVertsBase,
-        sizeof(cubeVertsBase) / sizeof(float));
-
-    constexpr int meshStride = 11 * sizeof(float);
+    const std::vector<float> cubeVerts = CreateCubeVerticesWithTangents();
     VertexArray cubeVAO;
-    cubeVAO.Bind();
     VertexBuffer cubeVBO(cubeVerts.data(), (unsigned int)(cubeVerts.size() * sizeof(float)));
-    cubeVAO.AddAttribute(0, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)0);
-    cubeVAO.AddAttribute(1, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(3 * sizeof(float)));
-    cubeVAO.AddAttribute(2, 2, GL_FLOAT, GL_FALSE, meshStride, (void*)(6 * sizeof(float)));
-    cubeVAO.AddAttribute(3, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(8 * sizeof(float)));
+    ConfigureMeshAttributes(cubeVAO, cubeVBO);
 
-    // ---------- 地面平面（阴影接收面）----------
-    float planeVertsBase[] = {
-        // positions            // normals         // texcoords
-         6.0f, -0.5f,  6.0f,    0.0f, 1.0f, 0.0f,  6.0f, 0.0f,
-        -6.0f, -0.5f,  6.0f,    0.0f, 1.0f, 0.0f,  0.0f, 0.0f,
-        -6.0f, -0.5f, -6.0f,    0.0f, 1.0f, 0.0f,  0.0f, 6.0f,
-
-         6.0f, -0.5f,  6.0f,    0.0f, 1.0f, 0.0f,  6.0f, 0.0f,
-        -6.0f, -0.5f, -6.0f,    0.0f, 1.0f, 0.0f,  0.0f, 6.0f,
-         6.0f, -0.5f, -6.0f,    0.0f, 1.0f, 0.0f,  6.0f, 6.0f,
-    };
-    const std::vector<float> planeVerts = BuildTangentVerticesFromTriangleList(
-        planeVertsBase,
-        sizeof(planeVertsBase) / sizeof(float));
-
+    const std::vector<float> planeVerts = CreatePlaneVerticesWithTangents();
     VertexArray planeVAO;
-    planeVAO.Bind();
     VertexBuffer planeVBO(planeVerts.data(), (unsigned int)(planeVerts.size() * sizeof(float)));
-    planeVAO.AddAttribute(0, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)0);
-    planeVAO.AddAttribute(1, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(3 * sizeof(float)));
-    planeVAO.AddAttribute(2, 2, GL_FLOAT, GL_FALSE, meshStride, (void*)(6 * sizeof(float)));
-    planeVAO.AddAttribute(3, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(8 * sizeof(float)));
+    ConfigureMeshAttributes(planeVAO, planeVBO);
 
-    // ---------- 球体（UV球，32×32 分段）----------
-    std::vector<float>        sphereVerts;
+    std::vector<float> sphereVerts;
     std::vector<unsigned int> sphereIdxs;
     GenerateSphere(0.5f, 32, 32, sphereVerts, sphereIdxs);
-    VertexArray  sphereVAO;
-    sphereVAO.Bind();
+    VertexArray sphereVAO;
     VertexBuffer sphereVBO(sphereVerts.data(), (unsigned int)(sphereVerts.size() * sizeof(float)));
-    IndexBuffer  sphereEBO(sphereIdxs.data(), (unsigned int)sphereIdxs.size());
-    sphereVAO.AddAttribute(0, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)0);
-    sphereVAO.AddAttribute(1, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(3 * sizeof(float)));
-    sphereVAO.AddAttribute(2, 2, GL_FLOAT, GL_FALSE, meshStride, (void*)(6 * sizeof(float)));
-    sphereVAO.AddAttribute(3, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(8 * sizeof(float)));
+    IndexBuffer sphereEBO(sphereIdxs.data(), (unsigned int)sphereIdxs.size());
+    ConfigureMeshAttributes(sphereVAO, sphereVBO);
 
-
-    // ---------- 纹理 ----------
     Texture diffuseMap("assets/brickwall.jpg");
-    if (!diffuseMap.IsLoaded()) { std::cerr << "无法加载漫反射贴图。\n"; return -1; }
-    diffuseMap.SetWrapMode(TextureWrapMode::Repeat, TextureWrapMode::Repeat);
-    diffuseMap.SetFilterMode(TextureFilterMode::LinearMipmapLinear, TextureFilterMode::Linear);
+    if (!ValidateRequiredTexture(diffuseMap, "漫反射贴图")) {
+        return -1;
+    }
 
     Texture normalMap("assets/brickwall_normal.jpg");
-    if (!normalMap.IsLoaded()) { std::cerr << "无法加载法线贴图。\n"; return -1; }
-    normalMap.SetWrapMode(TextureWrapMode::Repeat, TextureWrapMode::Repeat);
-    normalMap.SetFilterMode(TextureFilterMode::LinearMipmapLinear, TextureFilterMode::Linear);
+    if (!ValidateRequiredTexture(normalMap, "法线贴图")) {
+        return -1;
+    }
 
-    // 高光图
-    Texture specularMap("assets/container_specular.png");
-    if (!specularMap.IsLoaded()) { std::cerr << "无法加载高光贴图。\n"; return -1; }
-    specularMap.SetWrapMode(TextureWrapMode::Repeat, TextureWrapMode::Repeat);
-    specularMap.SetFilterMode(TextureFilterMode::LinearMipmapLinear, TextureFilterMode::Linear);
+    Texture aoMap("assets/container_specular.png");
+    if (!ValidateRequiredTexture(aoMap, "AO 贴图（暂用容器高光图）")) {
+        return -1;
+    }
 
-    // ---------- 光照 ----------
+    const PBRTextureAtlas atlas = LoadPBRTextureAtlas("rustediron2");
+
+    PBRMaterial pbrMaterial;
+    ConfigurePBRMaterial(pbrMaterial, atlas, diffuseMap, normalMap, aoMap);
+
     Light sceneLight(glm::vec3(2.0f, 1.5f, 2.0f));
     sceneLight.SetAmbient(glm::vec3(0.15f, 0.15f, 0.15f));
     sceneLight.SetDiffuse(glm::vec3(0.85f, 0.85f, 0.85f));
     sceneLight.SetSpecular(glm::vec3(1.0f, 1.0f, 1.0f));
 
     const glm::vec3 dirLightDirection(-0.2f, -1.0f, -0.3f);
+    unsigned int irradianceMap = CreateSolidColorCubemap(glm::vec3(0.22f, 0.25f, 0.30f));
+    unsigned int prefilterMap = CreateSolidColorCubemap(glm::vec3(0.45f, 0.47f, 0.50f));
+    unsigned int brdfLUT = CreateFallbackBRDFLUT();
 
-    ShadowMap shadowMap(2048, 2048);
-    if (!shadowMap.IsReady()) {
-        std::cerr << "阴影贴图初始化失败。\n";
-        return -1;
-    }
-
-    shadowMap.SetLightProjectionOrtho(
-        -8.0f, 8.0f,
-        -8.0f, 8.0f,
-        1.0f, 20.0f);
-
-    shader.Use();
-    shader.SetInt("texture_diffuse",  0);
-    shader.SetInt("texture_specular", 1);
-    shader.SetInt("shadowMap", 2);
-    shader.SetInt("texture_normal", 3);
-    shader.SetFloat("shadowBiasSlope", 0.005f);
-    shader.SetFloat("shadowBiasMin", 0.0005);
-    shader.SetInt("shadowPcfRadius", 1);
-
-    // 材质（Ka/Kd/Ks + shininess）
-    shader.SetVec3("material.ka", glm::vec3(0.35f, 0.35f, 0.35f));
-    shader.SetVec3("material.kd", glm::vec3(1.0f, 1.0f, 1.0f));
-    shader.SetVec3("material.ks", glm::vec3(0.65f, 0.65f, 0.65f));
-    shader.SetFloat("material.shininess", 32.0f);
-
-    // 点光源（复用现有 Light 数据）
-    sceneLight.Apply(shader, "pointLight");
-    shader.SetFloat("pointLight.constant", 1.0f);
-    shader.SetFloat("pointLight.linear", 0.09f);
-    shader.SetFloat("pointLight.quadratic", 0.032f);
-
-    // 方向光
-    shader.SetVec3("dirLight.direction", dirLightDirection);
-    shader.SetVec3("dirLight.ambient", glm::vec3(0.06f, 0.06f, 0.07f));
-    shader.SetVec3("dirLight.diffuse", glm::vec3(0.28f, 0.28f, 0.30f));
-    shader.SetVec3("dirLight.specular", glm::vec3(0.35f, 0.35f, 0.40f));
-
-    // 聚光灯
-    shader.SetVec3("spotLight.ambient", glm::vec3(0.0f, 0.0f, 0.0f));
-    shader.SetVec3("spotLight.diffuse", glm::vec3(0.90f, 0.90f, 0.90f));
-    shader.SetVec3("spotLight.specular", glm::vec3(1.0f, 1.0f, 1.0f));
-    shader.SetFloat("spotLight.cutOff", cosf(glm::radians(12.5f)));
-    shader.SetFloat("spotLight.outerCutOff", cosf(glm::radians(17.5f)));
-    shader.SetFloat("spotLight.constant", 1.0f);
-    shader.SetFloat("spotLight.linear", 0.09f);
-    shader.SetFloat("spotLight.quadratic", 0.032f);
+    ConfigurePBRShaderStaticUniforms(pbrShader, sceneLight, dirLightDirection);
 
     lampShader.Use();
     lampShader.SetVec3("lightColor", sceneLight.GetSpecular());
 
-
-    auto RenderSceneMeshes = [&](Shader& activeShader, float currentFrame) {
-        // 地面平面（receiver）
-        glm::mat4 modelPlane(1.0f);
-        activeShader.SetMat4("model", modelPlane);
-        planeVAO.Bind();
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-
-        // 立方体
-        glm::mat4 modelCube = glm::translate(glm::mat4(1.0f), glm::vec3(-1.2f, 0.0f, 0.0f));
-        modelCube = glm::rotate(modelCube, currentFrame, glm::vec3(0.5f, 1.0f, 0.0f));
-        activeShader.SetMat4("model", modelCube);
-        cubeVAO.Bind();
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-
-        // 球体
-        glm::mat4 modelSphere = glm::translate(glm::mat4(1.0f), glm::vec3(1.2f, 0.0f, 0.0f));
-        modelSphere = glm::rotate(modelSphere, currentFrame * 0.8f, glm::vec3(0.0f, 1.0f, 0.0f));
-        activeShader.SetMat4("model", modelSphere);
-        sphereVAO.Bind();
-        glDrawElements(GL_TRIANGLES, sphereEBO.GetCount(), GL_UNSIGNED_INT, 0);
-    };
-
-    // ---------- 渲染循环 ----------
     while (!win.ShouldClose())
     {
         float currentFrame = static_cast<float>(glfwGetTime());
@@ -344,63 +556,36 @@ int main()
             framebufferHeight = 1;
         }
 
-        // Shadow Pass: 从平行光方向渲染深度贴图
-        const glm::vec3 lightDirN = glm::normalize(dirLightDirection);
-        const glm::vec3 virtualLightPos = -lightDirN * 8.0f;
-        shadowMap.UpdateLightView(virtualLightPos, glm::vec3(0.0f));
-        const glm::mat4 lightSpaceMatrix = shadowMap.GetLightSpaceMatrix();
-
-        shadowMap.BeginRender();
-        depthShader.Use();
-        depthShader.SetMat4("lightSpaceMatrix", lightSpaceMatrix);
-        RenderSceneMeshes(depthShader, currentFrame);
-        shadowMap.EndRender(static_cast<unsigned int>(framebufferWidth), static_cast<unsigned int>(framebufferHeight));
-
-        // Lighting Pass: 主渲染阶段采样 shadow map
         glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        shader.Use();
-        diffuseMap.Bind(0);
-        specularMap.Bind(1);
-        shadowMap.BindDepthTexture(2);
-        normalMap.Bind(3);
+        pbrShader.Use();
+        pbrMaterial.Bind(pbrShader, "material", 0);
+        BindIBLTextures(irradianceMap, prefilterMap, brdfLUT);
 
         glm::mat4 view = camera.GetViewMatrix();
         glm::mat4 projection = glm::perspective(
             glm::radians(camera.Zoom),
             static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight),
             0.1f, 100.0f);
-        shader.SetMat4("view", view);
-        shader.SetMat4("projection", projection);
-        shader.SetMat4("lightSpaceMatrix", lightSpaceMatrix);
-        shader.SetVec3("viewPos", camera.Position);
-        shader.SetFloat("shadowBiasSlope", 0.05f);
-        shader.SetFloat("shadowBiasMin", 0.0005f);
-        shader.SetInt("shadowPcfRadius", 1);
+        pbrShader.SetMat4("view", view);
+        pbrShader.SetMat4("projection", projection);
+        pbrShader.SetVec3("camPos", camera.Position);
 
-        // 点光源位置/颜色上传
-        sceneLight.Apply(shader, "pointLight");
+        pbrShader.SetVec3("pointLight.position", sceneLight.GetPosition());
+        pbrShader.SetVec3("spotLight.position", camera.Position);
+        pbrShader.SetVec3("spotLight.direction", camera.Front);
 
-        // 聚光灯跟随摄像机
-        shader.SetVec3("spotLight.position", camera.Position);
-        shader.SetVec3("spotLight.direction", camera.Front);
-
-        RenderSceneMeshes(shader, currentFrame);
-
-        // 光源小立方体（lamp）
-        lampShader.Use();
-        lampShader.SetMat4("view", view);
-        lampShader.SetMat4("projection", projection);
-        glm::mat4 lampModel = glm::translate(glm::mat4(1.0f), sceneLight.GetPosition());
-        lampModel = glm::scale(lampModel, glm::vec3(0.15f));
-        lampShader.SetMat4("model", lampModel);
-        cubeVAO.Bind();
-        glDrawArrays(GL_TRIANGLES, 0, 36);
+        RenderSceneGeometry(pbrShader, planeVAO, cubeVAO, sphereVAO, sphereEBO, currentFrame);
+        RenderLamp(lampShader, cubeVAO, sceneLight, view, projection);
 
         win.SwapBuffers();
         win.PollEvents();
     }
+
+    glDeleteTextures(1, &irradianceMap);
+    glDeleteTextures(1, &prefilterMap);
+    glDeleteTextures(1, &brdfLUT);
 
     return 0;
 }
