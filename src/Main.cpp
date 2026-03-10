@@ -20,7 +20,58 @@ extern Camera camera;
 extern float deltaTime;
 extern float lastFrame;
 
-// 生成 UV 球体顶点数据（每顶点：位置xyz + 法线xyz + 纹理坐标uv）
+// 为非索引三角形网格生成切线（输入布局：pos3 + normal3 + uv2）
+static std::vector<float> BuildTangentVerticesFromTriangleList(const float* src, size_t floatCount)
+{
+    constexpr size_t srcStride = 8;
+    constexpr size_t dstStride = 11;
+    std::vector<float> out;
+    if (src == nullptr || floatCount == 0 || (floatCount % (srcStride * 3)) != 0) {
+        return out;
+    }
+
+    out.reserve((floatCount / srcStride) * dstStride);
+
+    for (size_t i = 0; i < floatCount; i += srcStride * 3) {
+        const float* v0 = src + i;
+        const float* v1 = src + i + srcStride;
+        const float* v2 = src + i + srcStride * 2;
+
+        glm::vec3 p0(v0[0], v0[1], v0[2]);
+        glm::vec3 p1(v1[0], v1[1], v1[2]);
+        glm::vec3 p2(v2[0], v2[1], v2[2]);
+        glm::vec2 uv0(v0[6], v0[7]);
+        glm::vec2 uv1(v1[6], v1[7]);
+        glm::vec2 uv2(v2[6], v2[7]);
+
+        glm::vec3 edge1 = p1 - p0;
+        glm::vec3 edge2 = p2 - p0;
+        glm::vec2 deltaUV1 = uv1 - uv0;
+        glm::vec2 deltaUV2 = uv2 - uv0;
+
+        float det = deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y;
+        glm::vec3 tangent(1.0f, 0.0f, 0.0f);
+        if (fabsf(det) > 1e-8f) {
+            float invDet = 1.0f / det;
+            tangent.x = invDet * (deltaUV2.y * edge1.x - deltaUV1.y * edge2.x);
+            tangent.y = invDet * (deltaUV2.y * edge1.y - deltaUV1.y * edge2.y);
+            tangent.z = invDet * (deltaUV2.y * edge1.z - deltaUV1.y * edge2.z);
+            tangent = glm::normalize(tangent);
+        }
+
+        for (int v = 0; v < 3; ++v) {
+            const float* srcV = src + i + srcStride * static_cast<size_t>(v);
+            out.insert(out.end(), srcV, srcV + srcStride);
+            out.push_back(tangent.x);
+            out.push_back(tangent.y);
+            out.push_back(tangent.z);
+        }
+    }
+
+    return out;
+}
+
+// 生成 UV 球体顶点数据（每顶点：位置xyz + 法线xyz + 纹理坐标uv + 切线xyz）
 static void GenerateSphere(float radius, int stacks, int sectors,
                            std::vector<float>& verts, std::vector<unsigned int>& idxs)
 {
@@ -36,6 +87,9 @@ static void GenerateSphere(float radius, int stacks, int sectors,
             float nx = x / radius;
             float ny = y / radius;
             float nz = z / radius;
+            float tx = -sinf(theta);
+            float ty = 0.0f;
+            float tz = cosf(theta);
 
             verts.push_back(x);
             verts.push_back(y);
@@ -45,6 +99,9 @@ static void GenerateSphere(float radius, int stacks, int sectors,
             verts.push_back(nz);
             verts.push_back((float)j / sectors);
             verts.push_back((float)i / stacks);
+            verts.push_back(tx);
+            verts.push_back(ty);
+            verts.push_back(tz);
         }
     }
     for (int i = 0; i < stacks; ++i) {
@@ -74,7 +131,7 @@ int main()
     Shader depthShader("shaders/shadow_depth.vert", "shaders/shadow_depth.frag");
 
     // ---------- 立方体（每顶点：位置3 + 法线3 + 纹理2）----------
-    float cubeVerts[] = {
+    float cubeVertsBase[] = {
         // back face
         -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
          0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
@@ -123,16 +180,21 @@ int main()
         -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 1.0f,
         -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,  0.0f, 0.0f,
     };
-    constexpr int meshStride = 8 * sizeof(float);
+    const std::vector<float> cubeVerts = BuildTangentVerticesFromTriangleList(
+        cubeVertsBase,
+        sizeof(cubeVertsBase) / sizeof(float));
+
+    constexpr int meshStride = 11 * sizeof(float);
     VertexArray cubeVAO;
     cubeVAO.Bind();
-    VertexBuffer cubeVBO(cubeVerts, sizeof(cubeVerts));
+    VertexBuffer cubeVBO(cubeVerts.data(), (unsigned int)(cubeVerts.size() * sizeof(float)));
     cubeVAO.AddAttribute(0, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)0);
     cubeVAO.AddAttribute(1, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(3 * sizeof(float)));
     cubeVAO.AddAttribute(2, 2, GL_FLOAT, GL_FALSE, meshStride, (void*)(6 * sizeof(float)));
+    cubeVAO.AddAttribute(3, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(8 * sizeof(float)));
 
     // ---------- 地面平面（阴影接收面）----------
-    float planeVerts[] = {
+    float planeVertsBase[] = {
         // positions            // normals         // texcoords
          6.0f, -0.5f,  6.0f,    0.0f, 1.0f, 0.0f,  6.0f, 0.0f,
         -6.0f, -0.5f,  6.0f,    0.0f, 1.0f, 0.0f,  0.0f, 0.0f,
@@ -142,12 +204,17 @@ int main()
         -6.0f, -0.5f, -6.0f,    0.0f, 1.0f, 0.0f,  0.0f, 6.0f,
          6.0f, -0.5f, -6.0f,    0.0f, 1.0f, 0.0f,  6.0f, 6.0f,
     };
+    const std::vector<float> planeVerts = BuildTangentVerticesFromTriangleList(
+        planeVertsBase,
+        sizeof(planeVertsBase) / sizeof(float));
+
     VertexArray planeVAO;
     planeVAO.Bind();
-    VertexBuffer planeVBO(planeVerts, sizeof(planeVerts));
+    VertexBuffer planeVBO(planeVerts.data(), (unsigned int)(planeVerts.size() * sizeof(float)));
     planeVAO.AddAttribute(0, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)0);
     planeVAO.AddAttribute(1, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(3 * sizeof(float)));
     planeVAO.AddAttribute(2, 2, GL_FLOAT, GL_FALSE, meshStride, (void*)(6 * sizeof(float)));
+    planeVAO.AddAttribute(3, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(8 * sizeof(float)));
 
     // ---------- 球体（UV球，32×32 分段）----------
     std::vector<float>        sphereVerts;
@@ -160,13 +227,19 @@ int main()
     sphereVAO.AddAttribute(0, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)0);
     sphereVAO.AddAttribute(1, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(3 * sizeof(float)));
     sphereVAO.AddAttribute(2, 2, GL_FLOAT, GL_FALSE, meshStride, (void*)(6 * sizeof(float)));
+    sphereVAO.AddAttribute(3, 3, GL_FLOAT, GL_FALSE, meshStride, (void*)(8 * sizeof(float)));
 
 
     // ---------- 纹理 ----------
-    Texture diffuseMap("assets/container2.png");
+    Texture diffuseMap("assets/brickwall.jpg");
     if (!diffuseMap.IsLoaded()) { std::cerr << "无法加载漫反射贴图。\n"; return -1; }
     diffuseMap.SetWrapMode(TextureWrapMode::Repeat, TextureWrapMode::Repeat);
     diffuseMap.SetFilterMode(TextureFilterMode::LinearMipmapLinear, TextureFilterMode::Linear);
+
+    Texture normalMap("assets/brickwall_normal.jpg");
+    if (!normalMap.IsLoaded()) { std::cerr << "无法加载法线贴图。\n"; return -1; }
+    normalMap.SetWrapMode(TextureWrapMode::Repeat, TextureWrapMode::Repeat);
+    normalMap.SetFilterMode(TextureFilterMode::LinearMipmapLinear, TextureFilterMode::Linear);
 
     // 高光图
     Texture specularMap("assets/container_specular.png");
@@ -197,6 +270,7 @@ int main()
     shader.SetInt("texture_diffuse",  0);
     shader.SetInt("texture_specular", 1);
     shader.SetInt("shadowMap", 2);
+    shader.SetInt("texture_normal", 3);
     shader.SetFloat("shadowBiasSlope", 0.005f);
     shader.SetFloat("shadowBiasMin", 0.0005);
     shader.SetInt("shadowPcfRadius", 1);
@@ -290,6 +364,7 @@ int main()
         diffuseMap.Bind(0);
         specularMap.Bind(1);
         shadowMap.BindDepthTexture(2);
+        normalMap.Bind(3);
 
         glm::mat4 view = camera.GetViewMatrix();
         glm::mat4 projection = glm::perspective(

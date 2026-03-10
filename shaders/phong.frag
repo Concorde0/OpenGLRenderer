@@ -5,6 +5,7 @@ in vec3 FragPos;
 in vec3 Normal;
 in vec2 TexCoord;
 in vec4 FragPosLightSpace;
+in mat3 TBN;
 
 struct Material {
     vec3 ka;
@@ -53,6 +54,7 @@ uniform vec3 viewPos;
 uniform sampler2D texture_diffuse;
 uniform sampler2D texture_specular;
 uniform sampler2D shadowMap;
+uniform sampler2D texture_normal;
 uniform float shadowBiasSlope;
 uniform float shadowBiasMin;
 uniform int shadowPcfRadius;
@@ -110,7 +112,9 @@ vec3 CalcPhong(vec3 lightDir, vec3 lightAmbient, vec3 lightDiffuse, vec3 lightSp
 
 void main()
 {
-    vec3 norm = normalize(Normal);
+    vec3 tangentNormal = texture(texture_normal, TexCoord).rgb;
+    tangentNormal = tangentNormal * 2.0 - 1.0;
+    vec3 norm = normalize(TBN * tangentNormal);
     vec3 viewDir = normalize(viewPos - FragPos);
 
     vec3 baseColor = texture(texture_diffuse, TexCoord).rgb;
