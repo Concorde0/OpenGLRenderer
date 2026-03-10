@@ -90,7 +90,7 @@ int main()
         }
     )";
 
-    // 片段着色器（基础 Phong：环境光 + 漫反射 + 高光）
+    // 片段着色器（多光源方向光 + 点光 + 聚光灯。材质 Ka/Kd/Ks）
     const std::string fragmentShaderSource = R"(
         #version 330 core
         out vec4 FragColor;
@@ -99,41 +99,125 @@ int main()
         in vec3 Normal;
         in vec2 TexCoord;
 
-        struct Light {
+        struct Material {
+            vec3 ka;
+            vec3 kd;
+            vec3 ks;
+            float shininess;
+        };
+
+        struct PointLight {
             vec3 position;
+            vec3 ambient;
+            vec3 diffuse;
+            vec3 specular;
+            float constant;
+            float linear;
+            float quadratic;
+        };
+
+        struct DirLight {
+            vec3 direction;
             vec3 ambient;
             vec3 diffuse;
             vec3 specular;
         };
 
-        uniform Light light;
+        struct SpotLight {
+            vec3 position;
+            vec3 direction;
+            float cutOff;
+            float outerCutOff;
+            vec3 ambient;
+            vec3 diffuse;
+            vec3 specular;
+            float constant;
+            float linear;
+            float quadratic;
+        };
+
+        uniform Material material;
+        uniform PointLight pointLight;
+        uniform DirLight dirLight;
+        uniform SpotLight spotLight;
+
         uniform vec3 viewPos;
-        
+
         uniform sampler2D texture_diffuse;
         uniform sampler2D texture_specular;
+
+        vec3 CalcPhong(vec3 lightDir, vec3 lightAmbient, vec3 lightDiffuse, vec3 lightSpecular,
+                       vec3 norm, vec3 viewDir, vec3 baseColor, vec3 specColor)
+        {
+            float diff = max(dot(norm, lightDir), 0.0);
+            vec3 reflectDir = reflect(-lightDir, norm);
+            float spec = pow(max(dot(viewDir, reflectDir), 0.0), material.shininess);
+
+            vec3 ambient  = lightAmbient * material.ka * baseColor;
+            vec3 diffuse  = lightDiffuse * diff * material.kd * baseColor;
+            vec3 specular = lightSpecular * spec * material.ks * specColor;
+            return ambient + diffuse + specular;
+        }
         
         void main()
         {
             vec3 norm = normalize(Normal);
-            vec3 lightDir = normalize(light.position - FragPos);
             vec3 viewDir = normalize(viewPos - FragPos);
-            vec3 reflectDir = reflect(-lightDir, norm);
 
-            float diff = max(dot(norm, lightDir), 0.0);
-            float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
+            vec3 baseColor = texture(texture_diffuse, TexCoord).rgb;
+            vec3 specColor = texture(texture_specular, TexCoord).rgb;
 
-            vec3 albedo = texture(texture_diffuse, TexCoord).rgb;
-            vec3 specMap = texture(texture_specular, TexCoord).rgb;
+            // 方向光
+            vec3 dirLightDir = normalize(-dirLight.direction);
+            vec3 dirResult = CalcPhong(
+                dirLightDir,
+                dirLight.ambient,
+                dirLight.diffuse,
+                dirLight.specular,
+                norm,
+                viewDir,
+                baseColor,
+                specColor
+            );
 
-            vec3 ambient  = light.ambient * albedo;
-            vec3 diffuse  = light.diffuse * diff * albedo;
-            vec3 specular = light.specular * spec * specMap;
+            // 点光源（距离衰减）
+            vec3 pointLightDir = normalize(pointLight.position - FragPos);
+            float pointDist = length(pointLight.position - FragPos);
+            float pointAtten = 1.0 / (pointLight.constant + pointLight.linear * pointDist + pointLight.quadratic * pointDist * pointDist);
+            vec3 pointResult = CalcPhong(
+                pointLightDir,
+                pointLight.ambient,
+                pointLight.diffuse,
+                pointLight.specular,
+                norm,
+                viewDir,
+                baseColor,
+                specColor
+            ) * pointAtten;
 
-            FragColor = vec4(ambient + diffuse + specular, 1.0);
+            // 聚光灯（角度平滑 + 距离衰减）
+            vec3 spotLightDir = normalize(spotLight.position - FragPos);
+            float theta = dot(spotLightDir, normalize(-spotLight.direction));
+            float epsilon = spotLight.cutOff - spotLight.outerCutOff;
+            float intensity = clamp((theta - spotLight.outerCutOff) / epsilon, 0.0, 1.0);
+            float spotDist = length(spotLight.position - FragPos);
+            float spotAtten = 1.0 / (spotLight.constant + spotLight.linear * spotDist + spotLight.quadratic * spotDist * spotDist);
+            vec3 spotResult = CalcPhong(
+                spotLightDir,
+                spotLight.ambient,
+                spotLight.diffuse,
+                spotLight.specular,
+                norm,
+                viewDir,
+                baseColor,
+                specColor
+            ) * intensity * spotAtten;
+
+            FragColor = vec4(dirResult + pointResult + spotResult, 1.0);
         }
     )";
 
-    // 光源可视化（lamp）着色器
+    // 光源可视化着色器
     const std::string lampVertexShaderSource = R"(
         #version 330 core
         layout (location = 0) in vec3 aPos;
@@ -170,7 +254,7 @@ int main()
         -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
          0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
          0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f, 1.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  1.0f,  1.0f,
         -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 0.0f,
         -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,  0.0f, 1.0f,
 
@@ -256,7 +340,34 @@ int main()
     shader.Use();
     shader.SetInt("texture_diffuse",  0);
     shader.SetInt("texture_specular", 1);
-    sceneLight.Apply(shader);
+
+    // 材质（Ka/Kd/Ks + shininess）
+    shader.SetVec3("material.ka", glm::vec3(0.35f, 0.35f, 0.35f));
+    shader.SetVec3("material.kd", glm::vec3(1.0f, 1.0f, 1.0f));
+    shader.SetVec3("material.ks", glm::vec3(0.65f, 0.65f, 0.65f));
+    shader.SetFloat("material.shininess", 32.0f);
+
+    // 点光源（复用现有 Light 数据）
+    sceneLight.Apply(shader, "pointLight");
+    shader.SetFloat("pointLight.constant", 1.0f);
+    shader.SetFloat("pointLight.linear", 0.09f);
+    shader.SetFloat("pointLight.quadratic", 0.032f);
+
+    // 方向光
+    shader.SetVec3("dirLight.direction", glm::vec3(-0.2f, -1.0f, -0.3f));
+    shader.SetVec3("dirLight.ambient", glm::vec3(0.06f, 0.06f, 0.07f));
+    shader.SetVec3("dirLight.diffuse", glm::vec3(0.28f, 0.28f, 0.30f));
+    shader.SetVec3("dirLight.specular", glm::vec3(0.35f, 0.35f, 0.40f));
+
+    // 聚光灯
+    shader.SetVec3("spotLight.ambient", glm::vec3(0.0f, 0.0f, 0.0f));
+    shader.SetVec3("spotLight.diffuse", glm::vec3(0.90f, 0.90f, 0.90f));
+    shader.SetVec3("spotLight.specular", glm::vec3(1.0f, 1.0f, 1.0f));
+    shader.SetFloat("spotLight.cutOff", cosf(glm::radians(12.5f)));
+    shader.SetFloat("spotLight.outerCutOff", cosf(glm::radians(17.5f)));
+    shader.SetFloat("spotLight.constant", 1.0f);
+    shader.SetFloat("spotLight.linear", 0.09f);
+    shader.SetFloat("spotLight.quadratic", 0.032f);
 
     lampShader.Use();
     lampShader.SetVec3("lightColor", sceneLight.GetSpecular());
@@ -284,7 +395,13 @@ int main()
         shader.SetMat4("view", view);
         shader.SetMat4("projection", projection);
         shader.SetVec3("viewPos", camera.Position);
-        sceneLight.Apply(shader);
+
+        // 点光源位置/颜色上传
+        sceneLight.Apply(shader, "pointLight");
+
+        // 聚光灯跟随摄像机
+        shader.SetVec3("spotLight.position", camera.Position);
+        shader.SetVec3("spotLight.direction", camera.Front);
 
         // 立方体
         glm::mat4 modelCube = glm::translate(glm::mat4(1.0f), glm::vec3(-1.2f, 0.0f, 0.0f));
