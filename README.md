@@ -7,7 +7,7 @@
 - [x] Blinn-Phong 光照模型
 - [x] Shadow Mapping 阴影投射
 - [x] 法线贴图增强材质立体感
-- [ ] Cook-Torrance PBR 材质模型
+- [x] Cook-Torrance PBR 材质模型
 - [ ] 延迟渲染管线（多光源优化）
 - [ ] OBJ 模型导入与批量渲染
 - [ ] ImGui 控制面板，实时调节材质参数
