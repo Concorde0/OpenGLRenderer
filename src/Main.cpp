@@ -187,13 +187,6 @@ int main()
         std::cerr << "阴影贴图初始化失败。\n";
         return -1;
     }
-    // // 固定的阴影参数（不可调，便于简化）
-    // const float SHADOW_BIAS_SLOPE = 0.005f;
-    // const float SHADOW_BIAS_MIN   = 0.0005f;
-    // const int   SHADOW_PCF_RADIUS = 1;
-    // const float SHADOW_FRUSTUM_HALF = 8.0f;
-    // const float SHADOW_FRUSTUM_NEAR = 1.0f;
-    // const float SHADOW_FRUSTUM_FAR  = 20.0f;
 
     shadowMap.SetLightProjectionOrtho(
         -8.0f, 8.0f,
