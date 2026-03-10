@@ -133,8 +133,36 @@ int main()
         }
     )";
 
+    // 光源可视化（lamp）着色器
+    const std::string lampVertexShaderSource = R"(
+        #version 330 core
+        layout (location = 0) in vec3 aPos;
+
+        uniform mat4 model;
+        uniform mat4 view;
+        uniform mat4 projection;
+
+        void main()
+        {
+            gl_Position = projection * view * model * vec4(aPos, 1.0);
+        }
+    )";
+
+    const std::string lampFragmentShaderSource = R"(
+        #version 330 core
+        out vec4 FragColor;
+
+        uniform vec3 lightColor;
+
+        void main()
+        {
+            FragColor = vec4(lightColor, 1.0);
+        }
+    )";
+
     // 创建着色器
     Shader shader(vertexShaderSource, fragmentShaderSource, true);
+    Shader lampShader(lampVertexShaderSource, lampFragmentShaderSource, true);
 
     // ---------- 立方体（每顶点：位置3 + 法线3 + 纹理2）----------
     float cubeVerts[] = {
@@ -230,6 +258,9 @@ int main()
     shader.SetInt("texture_specular", 1);
     sceneLight.Apply(shader);
 
+    lampShader.Use();
+    lampShader.SetVec3("lightColor", sceneLight.GetSpecular());
+
     // ---------- 渲染循环 ----------
     while (!win.ShouldClose())
     {
@@ -268,6 +299,16 @@ int main()
         shader.SetMat4("model", modelSphere);
         sphereVAO.Bind();
         glDrawElements(GL_TRIANGLES, sphereEBO.GetCount(), GL_UNSIGNED_INT, 0);
+
+        // 光源小立方体（lamp）
+        lampShader.Use();
+        lampShader.SetMat4("view", view);
+        lampShader.SetMat4("projection", projection);
+        glm::mat4 lampModel = glm::translate(glm::mat4(1.0f), sceneLight.GetPosition());
+        lampModel = glm::scale(lampModel, glm::vec3(0.15f));
+        lampShader.SetMat4("model", lampModel);
+        cubeVAO.Bind();
+        glDrawArrays(GL_TRIANGLES, 0, 36);
 
         win.SwapBuffers();
         win.PollEvents();
