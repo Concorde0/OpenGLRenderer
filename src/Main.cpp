@@ -21,6 +21,8 @@
 #include "../include/VertexArray.h"
 #include "../include/VertexBuffer.h"
 #include "../include/IndexBuffer.h"
+#include "../include/Model.h"
+#include "../include/SceneNode.h"
 
 extern Camera camera;
 extern float deltaTime;
@@ -321,6 +323,8 @@ static void RenderSceneGeometry(Shader& shader,
                                 const IndexBuffer& sphereEBO,
                                 float currentFrame)
 {
+    shader.SetBool("useInstancing", false);
+
     glm::mat4 modelPlane(1.0f);
     shader.SetMat4("model", modelPlane);
     planeVAO.Bind();
@@ -355,6 +359,35 @@ static void RenderLamp(Shader& lampShader,
 
     cubeVAO.Bind();
     glDrawArrays(GL_TRIANGLES, 0, 36);
+}
+
+static std::vector<glm::mat4> BuildInstanceTransforms(int count, float radius, float yOffset)
+{
+    std::vector<glm::mat4> transforms;
+    if (count <= 0) {
+        return transforms;
+    }
+
+    transforms.reserve(static_cast<std::size_t>(count));
+    const float twoPi = 6.28318530718f;
+
+    for (int i = 0; i < count; ++i) {
+        float angle = twoPi * static_cast<float>(i) / static_cast<float>(count);
+        glm::vec3 position(
+            radius * std::cos(angle),
+            yOffset,
+            radius * std::sin(angle));
+
+        glm::mat4 model = glm::translate(glm::mat4(1.0f), position);
+        model = glm::rotate(model, angle + 0.25f, glm::vec3(0.0f, 1.0f, 0.0f));
+
+        float scale = 0.18f + 0.06f * std::sin(angle * 3.0f);
+        model = glm::scale(model, glm::vec3(scale));
+
+        transforms.push_back(model);
+    }
+
+    return transforms;
 }
 
 } // namespace
@@ -556,6 +589,25 @@ int main()
     IndexBuffer sphereEBO(sphereIdxs.data(), (unsigned int)sphereIdxs.size());
     ConfigureMeshAttributes(sphereVAO, sphereVBO);
 
+    Model objSceneModel;
+    if (!objSceneModel.LoadFromOBJ("assets/models/demo_scene.obj")) {
+        std::cerr << "[Model] Falling back to procedural model." << std::endl;
+        objSceneModel = Model::CreateFallbackModel();
+    }
+
+    SceneNode sceneRoot("Root");
+    SceneNode* spinningNode = sceneRoot.CreateChild(
+        "SpinningModel",
+        glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -2.8f)),
+        &objSceneModel);
+    SceneNode* orbitNode = sceneRoot.CreateChild(
+        "OrbitModel",
+        glm::translate(glm::mat4(1.0f), glm::vec3(-2.4f, 0.0f, 1.8f)),
+        &objSceneModel);
+
+    const bool enableInstancing = true;
+    std::vector<glm::mat4> instanceTransforms = BuildInstanceTransforms(24, 4.6f, -0.2f);
+
     Texture diffuseMap("assets/brickwall.jpg");
     if (!ValidateRequiredTexture(diffuseMap, "漫反射贴图")) {
         return -1;
@@ -635,6 +687,15 @@ int main()
 
         const auto renderStart = std::chrono::high_resolution_clock::now();
 
+        glm::mat4 spinningTransform = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -2.8f));
+        spinningTransform = glm::rotate(spinningTransform, currentFrame * 0.45f, glm::vec3(0.0f, 1.0f, 0.0f));
+        spinningNode->SetLocalTransform(spinningTransform);
+
+        glm::mat4 orbitTransform = glm::translate(glm::mat4(1.0f), glm::vec3(-2.4f, 0.0f, 1.8f));
+        orbitTransform = glm::rotate(orbitTransform, -currentFrame * 0.30f, glm::vec3(0.0f, 1.0f, 0.0f));
+        orbitTransform = glm::scale(orbitTransform, glm::vec3(0.8f));
+        orbitNode->SetLocalTransform(orbitTransform);
+
         if (renderMode == RenderMode::Forward) {
             glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -652,6 +713,10 @@ int main()
             pbrShader.SetVec3("spotLight.direction", camera.Front);
 
             RenderSceneGeometry(pbrShader, planeVAO, cubeVAO, sphereVAO, sphereEBO, currentFrame);
+            sceneRoot.Draw(pbrShader);
+            if (enableInstancing) {
+                objSceneModel.DrawInstanced(pbrShader, instanceTransforms);
+            }
             RenderLamp(lampShader, cubeVAO, sceneLight, view, projection);
         }
         else {
@@ -663,6 +728,10 @@ int main()
                                 sphereVAO,
                                 sphereEBO,
                                 currentFrame);
+            sceneRoot.Draw(deferredRenderer.GetGeometryShader());
+            if (enableInstancing) {
+                objSceneModel.DrawInstanced(deferredRenderer.GetGeometryShader(), instanceTransforms);
+            }
 
             glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
             deferredRenderer.RenderLightingPass(camera.Position, sceneLight);
