@@ -4,7 +4,7 @@
 
 ##  功能特性
 - [x] 纹理 UV 映射与插值 
-- [ ] Blinn-Phong 光照模型
+- [x] Blinn-Phong 光照模型
 - [ ] Shadow Mapping 阴影投射
 - [ ] 法线贴图增强材质立体感
 - [ ] Cook-Torrance PBR 材质模型
