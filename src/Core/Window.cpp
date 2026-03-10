@@ -23,7 +23,7 @@ float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 
 // 构造函数
-Window::Window() : window(nullptr) {
+Window::Window() : window(nullptr), m_CameraInputEnabled(true) {
     Window::instance = this;
 }
 
@@ -87,6 +87,12 @@ void Window::FramebufferSizeCallback(GLFWwindow* window, int width, int height) 
 
 // 静态回调函数 - Mouse
 void Window::MouseCallback(GLFWwindow* window, double xpos, double ypos) {
+    Window* owner = static_cast<Window*>(glfwGetWindowUserPointer(window));
+    if (owner == nullptr || !owner->m_CameraInputEnabled) {
+        firstMouse = true;
+        return;
+    }
+
     if (firstMouse) {
         lastX = xpos;
         lastY = ypos;
@@ -104,6 +110,11 @@ void Window::MouseCallback(GLFWwindow* window, double xpos, double ypos) {
 
 // 静态回调函数 - Scroll
 void Window::ScrollCallback(GLFWwindow* window, double xoffset, double yoffset) {
+    Window* owner = static_cast<Window*>(glfwGetWindowUserPointer(window));
+    if (owner == nullptr || !owner->m_CameraInputEnabled) {
+        return;
+    }
+
     camera.ProcessMouseScroll(yoffset);
 }
 
@@ -115,6 +126,10 @@ void Window::ProcessInput() {
         glfwSetWindowShouldClose(window, true);
     }
 
+    if (!m_CameraInputEnabled) {
+        return;
+    }
+
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
         camera.ProcessKeyboard(FORWARD, deltaTime);
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
@@ -123,6 +138,17 @@ void Window::ProcessInput() {
         camera.ProcessKeyboard(LEFT, deltaTime);
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
         camera.ProcessKeyboard(RIGHT, deltaTime);
+}
+
+void Window::SetCameraInputEnabled(bool enabled)
+{
+    m_CameraInputEnabled = enabled;
+    firstMouse = true;
+}
+
+bool Window::IsCameraInputEnabled() const
+{
+    return m_CameraInputEnabled;
 }
 
 // 检查是否应该关闭

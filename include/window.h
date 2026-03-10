@@ -12,6 +12,8 @@ public:
     GLFWwindow* Initialize();
     GLFWwindow* GetWindow() const;
     void ProcessInput();
+    void SetCameraInputEnabled(bool enabled);
+    bool IsCameraInputEnabled() const;
     bool ShouldClose() const;
     void SwapBuffers() const;
     void PollEvents() const;
@@ -22,6 +24,7 @@ public:
     
 private:
     GLFWwindow* window;
+    bool m_CameraInputEnabled;
     
     static void FramebufferSizeCallback(GLFWwindow* window, int width, int height);
     static void MouseCallback(GLFWwindow* window, double xpos, double ypos);

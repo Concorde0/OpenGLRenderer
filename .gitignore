@@ -30,4 +30,7 @@ Makefile
 *.tar
 *.gz
 
+# 运行时 UI 配置
+imgui.ini
+
 docs
