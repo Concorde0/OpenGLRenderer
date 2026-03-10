@@ -67,10 +67,8 @@ int main()
     glfwSetInputMode(win.GetWindow(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
     // 加载着色器文件
-        // 配置着色器搜索目录并加载着色器
-        Shader::SetShaderDirectory("shaders");
-        Shader shader("phong.vert", "phong.frag");
-        Shader lampShader("lamp.vert", "lamp.frag");
+    Shader shader("shaders/phong.vert", "shaders/phong.frag");
+    Shader lampShader("shaders/lamp.vert", "shaders/lamp.frag");
 
     // ---------- 立方体（每顶点：位置3 + 法线3 + 纹理2）----------
     float cubeVerts[] = {
