@@ -7,6 +7,8 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <iomanip>
 #include <memory>
 #include <vector>
 #include "../include/Window.h"
@@ -14,6 +16,7 @@
 #include "../include/Texture.h"
 #include "../include/PBRMaterial.h"
 #include "../include/Camera.h"
+#include "../include/DeferredRenderer.h"
 #include "../include/Light.h"
 #include "../include/VertexArray.h"
 #include "../include/VertexBuffer.h"
@@ -29,6 +32,42 @@ namespace {
 
 constexpr int kMeshStrideFloats = 11;
 constexpr int kMeshStrideBytes = kMeshStrideFloats * sizeof(float);
+
+enum class RenderMode {
+    Forward,
+    Deferred
+};
+
+struct PerformanceStats {
+    double totalMs = 0.0;
+    int samples = 0;
+    double averageMs = 0.0;
+
+    void Add(double sampleMs)
+    {
+        totalMs += sampleMs;
+        ++samples;
+
+        if (samples >= 120) {
+            averageMs = totalMs / static_cast<double>(samples);
+            totalMs = 0.0;
+            samples = 0;
+        }
+    }
+
+    double CurrentAverage() const
+    {
+        if (samples > 0) {
+            return totalMs / static_cast<double>(samples);
+        }
+        return averageMs;
+    }
+};
+
+static const char* RenderModeToString(RenderMode mode)
+{
+    return mode == RenderMode::Forward ? "Forward" : "Deferred";
+}
 
 struct PBRTextureAtlas {
     std::unique_ptr<Texture> albedo;
@@ -488,6 +527,16 @@ int main()
 
     Shader pbrShader("shaders/pbr.vert", "shaders/pbr.frag");
     Shader lampShader("shaders/lamp.vert", "shaders/lamp.frag");
+    DeferredRenderer deferredRenderer(static_cast<int>(Window::SCR_WIDTH),
+                                      static_cast<int>(Window::SCR_HEIGHT),
+                                      "shaders/deferred_geometry.vert",
+                                      "shaders/deferred_geometry.frag",
+                                      "shaders/deferred_lighting.vert",
+                                      "shaders/deferred_lighting.frag");
+    if (!deferredRenderer.IsReady()) {
+        std::cerr << "Deferred renderer initialization failed." << std::endl;
+        return -1;
+    }
 
     const std::vector<float> cubeVerts = CreateCubeVerticesWithTangents();
     VertexArray cubeVAO;
@@ -538,9 +587,19 @@ int main()
     unsigned int brdfLUT = CreateFallbackBRDFLUT();
 
     ConfigurePBRShaderStaticUniforms(pbrShader, sceneLight, dirLightDirection);
+    deferredRenderer.SetGeometryMaterial(glm::vec3(1.0f), 0.10f, 0.45f, 1.0f);
 
     lampShader.Use();
     lampShader.SetVec3("lightColor", sceneLight.GetSpecular());
+
+    RenderMode renderMode = RenderMode::Deferred;
+    bool f1PressedLastFrame = false;
+
+    PerformanceStats forwardStats;
+    PerformanceStats deferredStats;
+    double lastPerfReport = glfwGetTime();
+
+    std::cout << "Render mode: Deferred. Press F1 to toggle Forward/Deferred." << std::endl;
 
     while (!win.ShouldClose())
     {
@@ -552,32 +611,91 @@ int main()
         int framebufferWidth = static_cast<int>(Window::SCR_WIDTH);
         int framebufferHeight = static_cast<int>(Window::SCR_HEIGHT);
         glfwGetFramebufferSize(win.GetWindow(), &framebufferWidth, &framebufferHeight);
+        if (framebufferWidth <= 0) {
+            framebufferWidth = 1;
+        }
         if (framebufferHeight <= 0) {
             framebufferHeight = 1;
         }
 
-        glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        bool f1PressedNow = glfwGetKey(win.GetWindow(), GLFW_KEY_F1) == GLFW_PRESS;
+        if (f1PressedNow && !f1PressedLastFrame) {
+            renderMode = (renderMode == RenderMode::Forward) ? RenderMode::Deferred : RenderMode::Forward;
+            std::cout << "Switched to " << RenderModeToString(renderMode) << " renderer." << std::endl;
+        }
+        f1PressedLastFrame = f1PressedNow;
 
-        pbrShader.Use();
-        pbrMaterial.Bind(pbrShader, "material", 0);
-        BindIBLTextures(irradianceMap, prefilterMap, brdfLUT);
+        deferredRenderer.Resize(framebufferWidth, framebufferHeight);
 
         glm::mat4 view = camera.GetViewMatrix();
         glm::mat4 projection = glm::perspective(
             glm::radians(camera.Zoom),
             static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight),
             0.1f, 100.0f);
-        pbrShader.SetMat4("view", view);
-        pbrShader.SetMat4("projection", projection);
-        pbrShader.SetVec3("camPos", camera.Position);
 
-        pbrShader.SetVec3("pointLight.position", sceneLight.GetPosition());
-        pbrShader.SetVec3("spotLight.position", camera.Position);
-        pbrShader.SetVec3("spotLight.direction", camera.Front);
+        const auto renderStart = std::chrono::high_resolution_clock::now();
 
-        RenderSceneGeometry(pbrShader, planeVAO, cubeVAO, sphereVAO, sphereEBO, currentFrame);
-        RenderLamp(lampShader, cubeVAO, sceneLight, view, projection);
+        if (renderMode == RenderMode::Forward) {
+            glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            pbrShader.Use();
+            pbrMaterial.Bind(pbrShader, "material", 0);
+            BindIBLTextures(irradianceMap, prefilterMap, brdfLUT);
+
+            pbrShader.SetMat4("view", view);
+            pbrShader.SetMat4("projection", projection);
+            pbrShader.SetVec3("camPos", camera.Position);
+
+            pbrShader.SetVec3("pointLight.position", sceneLight.GetPosition());
+            pbrShader.SetVec3("spotLight.position", camera.Position);
+            pbrShader.SetVec3("spotLight.direction", camera.Front);
+
+            RenderSceneGeometry(pbrShader, planeVAO, cubeVAO, sphereVAO, sphereEBO, currentFrame);
+            RenderLamp(lampShader, cubeVAO, sceneLight, view, projection);
+        }
+        else {
+            deferredRenderer.SetGeometryAlbedoTexture(diffuseMap.GetID(), true);
+            deferredRenderer.BeginGeometryPass(view, projection);
+            RenderSceneGeometry(deferredRenderer.GetGeometryShader(),
+                                planeVAO,
+                                cubeVAO,
+                                sphereVAO,
+                                sphereEBO,
+                                currentFrame);
+
+            glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
+            deferredRenderer.RenderLightingPass(camera.Position, sceneLight);
+        }
+
+        glFinish();
+        const auto renderEnd = std::chrono::high_resolution_clock::now();
+        const double renderMs = std::chrono::duration<double, std::milli>(renderEnd - renderStart).count();
+
+        if (renderMode == RenderMode::Forward) {
+            forwardStats.Add(renderMs);
+        }
+        else {
+            deferredStats.Add(renderMs);
+        }
+
+        const double now = glfwGetTime();
+        if (now - lastPerfReport >= 1.0) {
+            const double forwardAvg = forwardStats.CurrentAverage();
+            const double deferredAvg = deferredStats.CurrentAverage();
+
+            std::cout << std::fixed << std::setprecision(3)
+                      << "[Perf] Forward: " << forwardAvg << " ms"
+                      << " | Deferred: " << deferredAvg << " ms";
+
+            if (forwardAvg > 0.0 && deferredAvg > 0.0) {
+                const double speedup = forwardAvg / deferredAvg;
+                std::cout << " | Ratio(F/D): " << speedup << "x";
+            }
+
+            std::cout << " | Mode: " << RenderModeToString(renderMode) << std::endl;
+            lastPerfReport = now;
+        }
 
         win.SwapBuffers();
         win.PollEvents();
