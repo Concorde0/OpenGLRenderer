@@ -1,34 +1,34 @@
 # OpenGLRenderer
 
-一个基于 **C++ + OpenGL** 的渲染学习项目，目标是快速实现一个可运行的 Demo，展示纹理映射、光照、阴影和材质调试。
+基于 C++ 与 OpenGL 的学习型渲染器示例，展示现代渲染技术与实时调试工具。适合作为学习、实验与扩展的平台。
 
-##  功能特性
-- [x] 纹理 UV 映射与插值 
-- [x] Blinn-Phong 光照模型
-- [x] Shadow Mapping 阴影投射
-- [x] 法线贴图增强材质立体感
-- [x] Cook-Torrance PBR 材质模型
-- [x] 延迟渲染管线（多光源优化）
-- [x] OBJ 模型导入与批量渲染
-- [x] ImGui 控制面板，实时调节材质参数
-
-##  技术栈
-- **C++17**
-- **OpenGL 4.x**
-- **GLFW / GLAD** 
-- **ImGui** 
-- **Assimp**	
+## 主要功能
+- 延迟渲染（G-buffer）：用于多光源高效照明
+- PBR（Cook–Torrance）：基于 Metalness/Roughness 的物理材质
+- Blinn-Phong：用于对比和兼容的传统光照模型
+- 阴影映射（Shadow Mapping）：方向光/点光的基础阴影实现
+- 法线贴图与高度贴图：增强表面细节
+- 帧缓冲与后处理：HDR / 曝光 / Gamma 调整（基础）
+- 纹理加载：使用 stb_image 加载贴图
+- 模型与网格支持：基础 OBJ/自定义模型加载与渲染
+- ImGui 调试面板：实时调节材质、光照与渲染参数
+- 可扩展的着色器管理：`shaders/` 目录配合 `Shader` 类
 
 ## 项目结构
 
 ```
 OpenGLRenderer/
-├─ src/        # 源代码
-├─ shaders/    # GLSL 着色器
-├─ assets/     # 纹理与示例资源
-├─ docs/       # 文档与指南
-├─ lib/        # 第三方库（静态/动态库）
-├─ bin/        # 可执行文件
-└─ include/    # 头文件
+├─ src/
+│  ├─ Main.cpp                # 程序入口
+│  ├─ Core/                   # 窗口、相机等核心模块（Camera, Window）
+│  ├─ Rendering/              # 渲染子系统（Shader, Texture, Framebuffer, DeferredRenderer, ShadowMap）
+│  ├─ Lighting/               # 光源实现（Light）
+│  ├─ UI/                     # ImGui 层（ImGuiLayer）
+│  └─ Other/                  # 外部依赖源（glad）
+├─ include/                   # 公共头文件与第三方头
+├─ shaders/                   # GLSL 着色器（.vert/.frag）
+├─ assets/                    # 示例模型、纹理与资源
+├─ lib/                       # 第三方库（例如 GLFW）
+├─ bin/                       # 编译输出（可执行文件）
+└─ docs/                      # 文档、笔记与学习材料
 ```
-
