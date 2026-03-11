@@ -95,7 +95,7 @@ void DeferredRenderer::SetGeometryAlbedoTexture(unsigned int textureID, bool ena
     glBindTexture(GL_TEXTURE_2D, enabled ? textureID : 0);
 }
 
-void DeferredRenderer::RenderLightingPass(const glm::vec3& viewPos, const Light& light)
+void DeferredRenderer::RenderLightingPass(const glm::vec3& viewPos, const Light& light, float lightIntensity)
 {
     Framebuffer::Unbind();
     glViewport(0, 0, m_Width, m_Height);
@@ -106,7 +106,7 @@ void DeferredRenderer::RenderLightingPass(const glm::vec3& viewPos, const Light&
     m_LightingShader.SetVec3("viewPos", viewPos);
     m_LightingShader.SetVec3("light.position", light.GetPosition());
     m_LightingShader.SetVec3("light.color", light.GetDiffuse());
-    m_LightingShader.SetFloat("light.intensity", 5.0f);
+    m_LightingShader.SetFloat("light.intensity", lightIntensity);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_GPosition);

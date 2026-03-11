@@ -32,7 +32,7 @@ public:
     Shader& GetGeometryShader() { return m_GeometryShader; }
     const Shader& GetGeometryShader() const { return m_GeometryShader; }
 
-    void RenderLightingPass(const glm::vec3& viewPos, const Light& light);
+    void RenderLightingPass(const glm::vec3& viewPos, const Light& light, float lightIntensity);
 
 private:
     bool CreateGBuffer();

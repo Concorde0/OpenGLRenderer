@@ -11,18 +11,21 @@
 #include <iomanip>
 #include <memory>
 #include <vector>
+#include <string>
 #include "../include/Window.h"
 #include "../include/Shader.h"
 #include "../include/Texture.h"
 #include "../include/PBRMaterial.h"
 #include "../include/Camera.h"
 #include "../include/DeferredRenderer.h"
+#include "../include/ImGuiLayer.h"
 #include "../include/Light.h"
 #include "../include/VertexArray.h"
 #include "../include/VertexBuffer.h"
 #include "../include/IndexBuffer.h"
 #include "../include/Model.h"
 #include "../include/SceneNode.h"
+#include "imgui/imgui.h"
 
 extern Camera camera;
 extern float deltaTime;
@@ -82,6 +85,39 @@ struct PBRTextureAtlas {
         return albedo != nullptr || metallic != nullptr || normal != nullptr || roughness != nullptr;
     }
 };
+
+struct SceneObjectState {
+    const char* name = "Object";
+    bool visible = true;
+    glm::vec3 position = glm::vec3(0.0f);
+    glm::vec3 rotationDeg = glm::vec3(0.0f);
+    glm::vec3 scale = glm::vec3(1.0f);
+};
+
+struct DebugPanelState {
+    bool enabled = true;
+    bool instancingEnabled = true;
+    float pointLightIntensity = 5.0f;
+    float pbrMetallic = 0.10f;
+    float pbrRoughness = 0.45f;
+    float pbrAO = 1.0f;
+
+    int selectedObject = 0;
+    int instanceCount = 24;
+    float instanceRadius = 4.6f;
+    float instanceYOffset = -0.2f;
+    bool instanceDirty = false;
+};
+
+static glm::mat4 ComposeTransform(const SceneObjectState& state)
+{
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), state.position);
+    model = glm::rotate(model, glm::radians(state.rotationDeg.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    model = glm::rotate(model, glm::radians(state.rotationDeg.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    model = glm::rotate(model, glm::radians(state.rotationDeg.z), glm::vec3(0.0f, 0.0f, 1.0f));
+    model = glm::scale(model, state.scale);
+    return model;
+}
 
 static bool FileExists(const std::string& path)
 {
@@ -321,26 +357,34 @@ static void RenderSceneGeometry(Shader& shader,
                                 const VertexArray& cubeVAO,
                                 const VertexArray& sphereVAO,
                                 const IndexBuffer& sphereEBO,
+                                const SceneObjectState& planeState,
+                                const SceneObjectState& cubeState,
+                                const SceneObjectState& sphereState,
                                 float currentFrame)
 {
     shader.SetBool("useInstancing", false);
 
-    glm::mat4 modelPlane(1.0f);
-    shader.SetMat4("model", modelPlane);
-    planeVAO.Bind();
-    glDrawArrays(GL_TRIANGLES, 0, 6);
+    if (planeState.visible) {
+        shader.SetMat4("model", ComposeTransform(planeState));
+        planeVAO.Bind();
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
 
-    glm::mat4 modelCube = glm::translate(glm::mat4(1.0f), glm::vec3(-1.2f, 0.0f, 0.0f));
-    modelCube = glm::rotate(modelCube, currentFrame, glm::vec3(0.5f, 1.0f, 0.0f));
-    shader.SetMat4("model", modelCube);
-    cubeVAO.Bind();
-    glDrawArrays(GL_TRIANGLES, 0, 36);
+    if (cubeState.visible) {
+        glm::mat4 cubeModel = ComposeTransform(cubeState);
+        cubeModel = glm::rotate(cubeModel, currentFrame, glm::vec3(0.5f, 1.0f, 0.0f));
+        shader.SetMat4("model", cubeModel);
+        cubeVAO.Bind();
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
 
-    glm::mat4 modelSphere = glm::translate(glm::mat4(1.0f), glm::vec3(1.2f, 0.0f, 0.0f));
-    modelSphere = glm::rotate(modelSphere, currentFrame * 0.8f, glm::vec3(0.0f, 1.0f, 0.0f));
-    shader.SetMat4("model", modelSphere);
-    sphereVAO.Bind();
-    glDrawElements(GL_TRIANGLES, sphereEBO.GetCount(), GL_UNSIGNED_INT, 0);
+    if (sphereState.visible) {
+        glm::mat4 sphereModel = ComposeTransform(sphereState);
+        sphereModel = glm::rotate(sphereModel, currentFrame * 0.8f, glm::vec3(0.0f, 1.0f, 0.0f));
+        shader.SetMat4("model", sphereModel);
+        sphereVAO.Bind();
+        glDrawElements(GL_TRIANGLES, sphereEBO.GetCount(), GL_UNSIGNED_INT, 0);
+    }
 }
 
 static void RenderLamp(Shader& lampShader,
@@ -388,6 +432,93 @@ static std::vector<glm::mat4> BuildInstanceTransforms(int count, float radius, f
     }
 
     return transforms;
+}
+
+static void DrawDebugPanel(DebugPanelState& panel,
+                           RenderMode& renderMode,
+                           Light& sceneLight,
+                           Camera& sceneCamera,
+                           SceneObjectState& planeObject,
+                           SceneObjectState& cubeObject,
+                           SceneObjectState& sphereObject,
+                           SceneObjectState& spinningObject,
+                           SceneObjectState& orbitObject,
+                           SceneObjectState& instancedObject)
+{
+    ImGui::SetNextWindowSize(ImVec2(430.0f, 640.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Scene Debug");
+
+    ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+    ImGui::Text("Frame: %.3f ms", 1000.0f / ImGui::GetIO().Framerate);
+    ImGui::Separator();
+
+    int modeIndex = (renderMode == RenderMode::Forward) ? 0 : 1;
+    const char* modeItems[] = { "Forward", "Deferred" };
+    if (ImGui::Combo("Render Mode", &modeIndex, modeItems, 2)) {
+        renderMode = (modeIndex == 0) ? RenderMode::Forward : RenderMode::Deferred;
+    }
+
+    ImGui::SeparatorText("Light");
+    glm::vec3 lightPos = sceneLight.GetPosition();
+    glm::vec3 lightColor = sceneLight.GetDiffuse();
+
+    if (ImGui::DragFloat3("Light Position", &lightPos.x, 0.05f)) {
+        sceneLight.SetPosition(lightPos);
+    }
+    if (ImGui::ColorEdit3("Light Color", &lightColor.x)) {
+        sceneLight.SetDiffuse(lightColor);
+        sceneLight.SetSpecular(glm::max(lightColor, glm::vec3(0.15f)));
+    }
+    ImGui::SliderFloat("Light Intensity", &panel.pointLightIntensity, 0.1f, 20.0f, "%.2f");
+
+    ImGui::SeparatorText("Material");
+    ImGui::SliderFloat("Roughness", &panel.pbrRoughness, 0.04f, 1.0f, "%.3f");
+    ImGui::SliderFloat("Metallic", &panel.pbrMetallic, 0.0f, 1.0f, "%.3f");
+    ImGui::SliderFloat("AO", &panel.pbrAO, 0.0f, 1.0f, "%.3f");
+
+    ImGui::SeparatorText("Camera");
+    ImGui::Text("Position: (%.2f, %.2f, %.2f)", sceneCamera.Position.x, sceneCamera.Position.y, sceneCamera.Position.z);
+    ImGui::Text("Front: (%.2f, %.2f, %.2f)", sceneCamera.Front.x, sceneCamera.Front.y, sceneCamera.Front.z);
+    ImGui::SliderFloat("Move Speed", &sceneCamera.MovementSpeed, 0.5f, 12.0f, "%.2f");
+    ImGui::SliderFloat("Mouse Sensitivity", &sceneCamera.MouseSensitivity, 0.02f, 0.8f, "%.3f");
+    ImGui::SliderFloat("Camera Zoom", &sceneCamera.Zoom, 15.0f, 90.0f, "%.1f");
+
+    ImGui::SeparatorText("Objects");
+    const char* objectItems[] = {
+        "Plane",
+        "Cube",
+        "Sphere",
+        "OBJ Spinning",
+        "OBJ Orbit",
+        "Instanced Ring"
+    };
+    ImGui::ListBox("Scene Object", &panel.selectedObject, objectItems, IM_ARRAYSIZE(objectItems), 6);
+
+    SceneObjectState* selected = nullptr;
+    if (panel.selectedObject == 0) selected = &planeObject;
+    if (panel.selectedObject == 1) selected = &cubeObject;
+    if (panel.selectedObject == 2) selected = &sphereObject;
+    if (panel.selectedObject == 3) selected = &spinningObject;
+    if (panel.selectedObject == 4) selected = &orbitObject;
+    if (panel.selectedObject == 5) selected = &instancedObject;
+
+    if (selected != nullptr) {
+        ImGui::Checkbox("Visible", &selected->visible);
+
+        if (selected == &instancedObject) {
+            panel.instancingEnabled = selected->visible;
+            panel.instanceDirty |= ImGui::SliderInt("Instance Count", &panel.instanceCount, 1, 256);
+            panel.instanceDirty |= ImGui::SliderFloat("Ring Radius", &panel.instanceRadius, 1.0f, 12.0f, "%.2f");
+            panel.instanceDirty |= ImGui::SliderFloat("Ring Height", &panel.instanceYOffset, -2.0f, 2.0f, "%.2f");
+        }
+        else {
+            ImGui::DragFloat3("Position", &selected->position.x, 0.05f);
+            ImGui::DragFloat3("Rotation", &selected->rotationDeg.x, 0.5f);
+            ImGui::DragFloat3("Scale", &selected->scale.x, 0.01f, 0.05f, 12.0f);
+        }
+    }
+
+    ImGui::End();
 }
 
 } // namespace
@@ -556,7 +687,15 @@ int main()
         return -1;
     }
 
-    glfwSetInputMode(win.GetWindow(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    ImGuiLayer imguiLayer;
+    if (!imguiLayer.Initialize(win.GetWindow())) {
+        std::cerr << "ImGui initialization failed." << std::endl;
+        return -1;
+    }
+
+    DebugPanelState debugPanel;
+    win.SetCameraInputEnabled(!debugPanel.enabled);
+    glfwSetInputMode(win.GetWindow(), GLFW_CURSOR, debugPanel.enabled ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
 
     Shader pbrShader("shaders/pbr.vert", "shaders/pbr.frag");
     Shader lampShader("shaders/lamp.vert", "shaders/lamp.frag");
@@ -605,8 +744,17 @@ int main()
         glm::translate(glm::mat4(1.0f), glm::vec3(-2.4f, 0.0f, 1.8f)),
         &objSceneModel);
 
-    const bool enableInstancing = true;
-    std::vector<glm::mat4> instanceTransforms = BuildInstanceTransforms(24, 4.6f, -0.2f);
+    SceneObjectState planeObject{ "Plane", true, glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f) };
+    SceneObjectState cubeObject{ "Cube", true, glm::vec3(-1.2f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f) };
+    SceneObjectState sphereObject{ "Sphere", true, glm::vec3(1.2f, 0.0f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f) };
+    SceneObjectState spinningObject{ "OBJ Spinning", true, glm::vec3(0.0f, 0.0f, -2.8f), glm::vec3(0.0f), glm::vec3(1.0f) };
+    SceneObjectState orbitObject{ "OBJ Orbit", true, glm::vec3(-2.4f, 0.0f, 1.8f), glm::vec3(0.0f), glm::vec3(0.8f) };
+    SceneObjectState instancedObject{ "Instanced Ring", true, glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(1.0f) };
+
+    std::vector<glm::mat4> instanceTransforms = BuildInstanceTransforms(
+        debugPanel.instanceCount,
+        debugPanel.instanceRadius,
+        debugPanel.instanceYOffset);
 
     Texture diffuseMap("assets/brickwall.jpg");
     if (!ValidateRequiredTexture(diffuseMap, "漫反射贴图")) {
@@ -646,6 +794,7 @@ int main()
 
     RenderMode renderMode = RenderMode::Deferred;
     bool f1PressedLastFrame = false;
+    bool f2PressedLastFrame = false;
 
     PerformanceStats forwardStats;
     PerformanceStats deferredStats;
@@ -659,6 +808,28 @@ int main()
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
         win.ProcessInput();
+
+        bool f2PressedNow = glfwGetKey(win.GetWindow(), GLFW_KEY_F2) == GLFW_PRESS;
+        if (f2PressedNow && !f2PressedLastFrame) {
+            debugPanel.enabled = !debugPanel.enabled;
+            win.SetCameraInputEnabled(!debugPanel.enabled);
+            glfwSetInputMode(win.GetWindow(), GLFW_CURSOR, debugPanel.enabled ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+        }
+        f2PressedLastFrame = f2PressedNow;
+
+        imguiLayer.BeginFrame();
+        if (debugPanel.enabled) {
+            DrawDebugPanel(debugPanel,
+                           renderMode,
+                           sceneLight,
+                           camera,
+                           planeObject,
+                           cubeObject,
+                           sphereObject,
+                           spinningObject,
+                           orbitObject,
+                           instancedObject);
+        }
 
         int framebufferWidth = static_cast<int>(Window::SCR_WIDTH);
         int framebufferHeight = static_cast<int>(Window::SCR_HEIGHT);
@@ -677,6 +848,25 @@ int main()
         }
         f1PressedLastFrame = f1PressedNow;
 
+        if (debugPanel.instanceDirty) {
+            instanceTransforms = BuildInstanceTransforms(
+                debugPanel.instanceCount,
+                debugPanel.instanceRadius,
+                debugPanel.instanceYOffset);
+            debugPanel.instanceDirty = false;
+        }
+
+        debugPanel.instancingEnabled = instancedObject.visible;
+
+        pbrMaterial.SetMetallicFactor(debugPanel.pbrMetallic);
+        pbrMaterial.SetRoughnessFactor(debugPanel.pbrRoughness);
+        pbrMaterial.SetAOFactor(debugPanel.pbrAO);
+
+        deferredRenderer.SetGeometryMaterial(glm::vec3(1.0f),
+                                             debugPanel.pbrMetallic,
+                                             debugPanel.pbrRoughness,
+                                             debugPanel.pbrAO);
+
         deferredRenderer.Resize(framebufferWidth, framebufferHeight);
 
         glm::mat4 view = camera.GetViewMatrix();
@@ -687,14 +877,17 @@ int main()
 
         const auto renderStart = std::chrono::high_resolution_clock::now();
 
-        glm::mat4 spinningTransform = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -2.8f));
+        glm::mat4 spinningTransform = glm::translate(glm::mat4(1.0f), spinningObject.position);
         spinningTransform = glm::rotate(spinningTransform, currentFrame * 0.45f, glm::vec3(0.0f, 1.0f, 0.0f));
-        spinningNode->SetLocalTransform(spinningTransform);
+        spinningTransform = glm::rotate(spinningTransform, glm::radians(spinningObject.rotationDeg.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        spinningTransform = glm::scale(spinningTransform, spinningObject.scale);
+        spinningNode->SetLocalTransform(spinningObject.visible ? spinningTransform : glm::scale(glm::mat4(1.0f), glm::vec3(0.0f)));
 
-        glm::mat4 orbitTransform = glm::translate(glm::mat4(1.0f), glm::vec3(-2.4f, 0.0f, 1.8f));
+        glm::mat4 orbitTransform = glm::translate(glm::mat4(1.0f), orbitObject.position);
         orbitTransform = glm::rotate(orbitTransform, -currentFrame * 0.30f, glm::vec3(0.0f, 1.0f, 0.0f));
-        orbitTransform = glm::scale(orbitTransform, glm::vec3(0.8f));
-        orbitNode->SetLocalTransform(orbitTransform);
+        orbitTransform = glm::rotate(orbitTransform, glm::radians(orbitObject.rotationDeg.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        orbitTransform = glm::scale(orbitTransform, orbitObject.scale);
+        orbitNode->SetLocalTransform(orbitObject.visible ? orbitTransform : glm::scale(glm::mat4(1.0f), glm::vec3(0.0f)));
 
         if (renderMode == RenderMode::Forward) {
             glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
@@ -709,12 +902,22 @@ int main()
             pbrShader.SetVec3("camPos", camera.Position);
 
             pbrShader.SetVec3("pointLight.position", sceneLight.GetPosition());
+            pbrShader.SetVec3("pointLight.color", sceneLight.GetDiffuse());
+            pbrShader.SetFloat("pointLight.intensity", debugPanel.pointLightIntensity);
             pbrShader.SetVec3("spotLight.position", camera.Position);
             pbrShader.SetVec3("spotLight.direction", camera.Front);
 
-            RenderSceneGeometry(pbrShader, planeVAO, cubeVAO, sphereVAO, sphereEBO, currentFrame);
+            RenderSceneGeometry(pbrShader,
+                                planeVAO,
+                                cubeVAO,
+                                sphereVAO,
+                                sphereEBO,
+                                planeObject,
+                                cubeObject,
+                                sphereObject,
+                                currentFrame);
             sceneRoot.Draw(pbrShader);
-            if (enableInstancing) {
+            if (debugPanel.instancingEnabled) {
                 objSceneModel.DrawInstanced(pbrShader, instanceTransforms);
             }
             RenderLamp(lampShader, cubeVAO, sceneLight, view, projection);
@@ -727,15 +930,20 @@ int main()
                                 cubeVAO,
                                 sphereVAO,
                                 sphereEBO,
+                                planeObject,
+                                cubeObject,
+                                sphereObject,
                                 currentFrame);
             sceneRoot.Draw(deferredRenderer.GetGeometryShader());
-            if (enableInstancing) {
+            if (debugPanel.instancingEnabled) {
                 objSceneModel.DrawInstanced(deferredRenderer.GetGeometryShader(), instanceTransforms);
             }
 
             glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
-            deferredRenderer.RenderLightingPass(camera.Position, sceneLight);
+            deferredRenderer.RenderLightingPass(camera.Position, sceneLight, debugPanel.pointLightIntensity);
         }
+
+        imguiLayer.EndFrame();
 
         glFinish();
         const auto renderEnd = std::chrono::high_resolution_clock::now();
@@ -773,6 +981,8 @@ int main()
     glDeleteTextures(1, &irradianceMap);
     glDeleteTextures(1, &prefilterMap);
     glDeleteTextures(1, &brdfLUT);
+
+    imguiLayer.Shutdown();
 
     return 0;
 }
