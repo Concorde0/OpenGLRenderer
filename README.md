@@ -32,3 +32,44 @@ OpenGLRenderer/
 ├─ bin/                       # 编译输出（可执行文件）
 └─ docs/                      # 文档、笔记与学习材料
 ```
+
+## 快速启动（Windows）
+
+### 环境要求
+- Windows 10/11
+- MinGW-w64（需要 `g++`，可在 PATH 中访问）
+- `lib/` 目录中可用的 GLFW 库文件
+
+### 一键构建并运行
+在项目根目录执行：
+
+```bat
+run.bat
+```
+
+该命令会自动完成：
+- 编译源码到 `bin/main.exe`
+- 编译成功后立即启动程序
+
+### 脚本参数
+- 仅编译：
+
+```bat
+run.bat build
+```
+
+- 仅运行（需要已有 `bin/main.exe`）：
+
+```bat
+run.bat run
+```
+
+### 在 VS Code 中运行
+- 调试启动：按 `F5`
+- 仅构建：按 `Ctrl+Shift+B`
+
+### 运行时常用按键
+- `W/A/S/D`：移动相机
+- 鼠标：旋转视角
+- `F1`：切换 Forward / Deferred 渲染模式
+- `F2`：开关 ImGui 调试面板
